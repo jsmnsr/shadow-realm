@@ -1,0 +1,12 @@
+[package]
+name = "vss-write-demo"
+version = "0.4.0-experimental.1"
+edition = "2021"
+rust-version = "1.85"
+description = "Explicitly opted-in VSS snapshot write-state experiment for disposable Windows VMs"
+publish = false
+
+[dependencies]
+
+[profile.release]
+strip = true
