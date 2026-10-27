@@ -1,7 +1,12 @@
-# VSS write-state experiment
+# Shadow Realm
+
+**`shadow-realm` is an experimental Windows CLI for inspecting VSS shadow
+copies and performing explicitly opted-in file operations inside them.**
+Inspect driver state, preview a file, diagnose volume locking, probe write
+support, or delete one selected file name from a disposable lab snapshot.
 
 **0.4.0-experimental.1 - disposable Windows x64 VMs only.**
-This dependency-free Rust experiment is not a supported VSS management tool,
+This dependency-free Rust utility is not a supported VSS management tool,
 a secure-erasure utility, or a production recovery tool. Use an elevated
 terminal in a disposable VM with a checkpoint and a sacrificial virtual disk.
 Never attach production disks. Working forensic copies will be intentionally
@@ -12,28 +17,61 @@ arbitrary completed VSS snapshots is **not established as supported**. Being
 the newest snapshot is not sufficient. The tool does not bypass driver
 authorization, patch the kernel, write raw sectors, or force dismounts.
 
+## Project layout
+
+| Location | Purpose |
+| --- | --- |
+| `src/`, `Cargo.toml`, `Cargo.lock` | The Shadow Realm CLI; no runtime dependency on the demo |
+| `scripts/` | Utility verification and release packaging |
+| [demo/](demo/README.md) | Disposable-VM walkthrough and owned-disk demonstration |
+| [demo/RESEARCH.md](demo/RESEARCH.md) | Historical lab observations and evidence limits |
+| [RELEASE-NOTES.md](RELEASE-NOTES.md) | Compatibility and release changes |
+
+The utility does not create disks or snapshots. The optional [demo](demo/README.md)
+does that separately to demonstrate source-versus-snapshot deletion.
+
+## Build and run
+
+Use Rust 1.85+ and the Windows x64 linker for your target. From the repository
+root:
+
+```powershell
+cargo build --release --locked --offline --target x86_64-pc-windows-msvc
+.\target\x86_64-pc-windows-msvc\release\shadow-realm.exe --help
+```
+
+For the GNU linker toolchain, use `x86_64-pc-windows-gnu` instead. Command
+examples below assume the executable is in the current directory, as in an
+extracted release. Live shadow-device access requires appropriate permissions;
+perform mutations only in an elevated, checkpointed disposable VM.
+
 ## Experimental release
 
 The Windows x64 ZIP includes the unsigned executable, matching demo script,
 Rust source and lockfile, build/verification scripts, this document, release
 notes, per-file SHA-256 checksums, and build provenance. No third-party Windows
 binaries or VM artifacts are included. No public/open-source license is granted
-by this private release.
+by this private release. `shadow-realm.exe` is at the archive root; the optional
+walkthrough, research notes, and demonstration script are under `demo/`.
 
 Compare the downloaded ZIP with the accompanying `SHA256SUMS.txt`:
 
 ```powershell
-Get-FileHash .\vss-write-demo-0.4.0-experimental.1-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\shadow-realm-0.4.0-experimental.1-windows-x64.zip -Algorithm SHA256
 ```
 
 Checksums detect corruption, not publisher identity; the executable is not
 Authenticode-signed. Extract into an ordinary directory outside all snapshots.
 
-### Compatibility change from 0.3.1
+### Compatibility
+
+The utility was formerly named `vss-write-demo`. Update executable paths and
+automation to use `shadow-realm`; there is no legacy executable alias. The
+demo script has moved to `demo\Invoke-ShadowRealmDemo.ps1`.
 
 `--restore-attributes-only` is removed and explicitly rejected. All mutating
 commands now require `--remount-snapshot`, including `restore-readonly`.
-The old non-remount default also performed attribute-only restoration and is
+The 0.3.1 non-remount default also performed attribute-only restoration and is
 no longer allowed. Neither flag restoration nor a successful remount proves
 complete filesystem recovery.
 
@@ -46,13 +84,13 @@ its `ID`, `DeviceObject`, and `VolumeName`. Device numbers can change after a
 reboot or reconnect. No automatic snapshot selection is performed.
 
 ```powershell
-.\vss-write-demo.exe --help
-.\vss-write-demo.exe inspect --snapshot 42
-.\vss-write-demo.exe delete --snapshot 42 --file 'Demo\delete-me.txt' --dry-run
-.\vss-write-demo.exe diagnose-lock --snapshot 42 --file 'Demo\delete-me.txt' --confirm-lab
-.\vss-write-demo.exe probe --snapshot 42 --confirm-lab --remount-snapshot
-.\vss-write-demo.exe delete --snapshot 42 --file 'Demo\delete-me.txt' --confirm-lab --confirm-delete --remount-snapshot
-.\vss-write-demo.exe restore-readonly --snapshot 42 --confirm-lab --remount-snapshot
+.\shadow-realm.exe --help
+.\shadow-realm.exe inspect --snapshot 42
+.\shadow-realm.exe delete --snapshot 42 --file 'Demo\delete-me.txt' --dry-run
+.\shadow-realm.exe diagnose-lock --snapshot 42 --file 'Demo\delete-me.txt' --confirm-lab
+.\shadow-realm.exe probe --snapshot 42 --confirm-lab --remount-snapshot
+.\shadow-realm.exe delete --snapshot 42 --file 'Demo\delete-me.txt' --confirm-lab --confirm-delete --remount-snapshot
+.\shadow-realm.exe restore-readonly --snapshot 42 --confirm-lab --remount-snapshot
 ```
 
 `inspect` queries attributes and driver writable status. `delete --dry-run`
@@ -124,62 +162,16 @@ recovery attempt, not an undo command. If it cannot lock or any stage fails,
 do not force dismount or return to an old attribute-only binary. Revert the
 disposable VM checkpoint. Do not interrupt a running mutation.
 
-## Bounded evidence, not guarantees
+## Demo and research
 
-Earlier disposable-VM experiments used Windows 11 build 22631 and Volsnap
-10.0.22621.1:
-
-| Configuration | Observation |
-| --- | --- |
-| Ordinary OS-volume shadow | Writable transition rejected with Win32 error 87. |
-| AIM-backed shadow | Marker writes were possible, but attribute-only restoration was followed by repeated NTFS event 140 transaction-log flush failures (`STATUS_INVALID_DEVICE_REQUEST`). |
-| Fresh Microsoft VHDX | Existing-file deletion with both remount transitions succeeded; the snapshot survived, source/sentinel hashes were preserved, read-only status returned, and no lab NTFS warnings appeared during the short follow-up. |
-
-These observations concern earlier builds and specific configurations, not
-live integration validation of this release. No reboot/detach persistence was
-established. A baseline snapshot was not rediscovered after VHDX reattach;
-that does not establish persistence of selective deletion. Static driver
-analysis and the SDK control definition do not establish a supported contract.
+See [demo/README.md](demo/README.md) for the owned-disk walkthrough and
+[demo/RESEARCH.md](demo/RESEARCH.md) for historical observations. Earlier
+configurations both succeeded and failed; these are bounded experiments,
+not a supported VSS contract or compatibility guarantee. Reboot/detach
+persistence remains unestablished.
 
 Automated tests use mock volume controls and owned temporary files/junctions.
-They never open live shadow devices. They do not establish filesystem safety.
-Independently compare source and other-snapshot controls when experimenting.
-
-## Owned-disk PowerShell demonstration
-
-`Invoke-VssDeletionDemo.ps1` requires Windows PowerShell 5.1+, elevation, at
-least 5 GiB free on the user-profile drive, and the matching release executable:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-VssDeletionDemo.ps1 -ConfirmLab
-```
-
-The process-scoped execution-policy override does not change machine policy.
-The executable defaults to the file beside the script (`-ToolPath` overrides).
-**Do not run this demo on a normal host.**
-
-The script creates its own new 2 GiB dynamic Microsoft VHDX under
-`$env:USERPROFILE\VssLab`, verifies disk identity before formatting, chooses
-an unused letter, and creates three files. It configures a 512 MiB
-self-contained VSS diff area, snapshots, and exposes a native symbolic-link
-view (`CreateSymbolicLink`, not VSCMount).
-
-It shows the same source/snapshot listings across three stages: all files
-present; only the owned source target deleted while the snapshot retains it;
-then the CLI deletes that snapshot name using both remount transitions.
-Two controls must remain hash-unchanged. GLOBALROOT enumeration uses .NET
-rather than PowerShell's provider.
-
-The script checks read-only driver status, snapshot identity, and lab NTFS
-event 140 during a 15-second interval. This bounded, message-filtered event
-check is not an exhaustive filesystem-health assessment. It stops on errors
-without forced dismount or attribute-only fallback.
-
-The disk, snapshot, logs, hashes, and view remain for inspection. These local
-artifacts can contain personal paths and device identities; **do not publish
-them**. A result file is written only after the script's checks pass. Do not
-recursively delete the run directory: it contains a link into the snapshot.
-Revert the disposable VM checkpoint to discard the experiment.
+They never open live shadow devices and do not establish filesystem safety.
 
 ## Build, verify, and package
 
@@ -189,7 +181,7 @@ components using your normal trusted toolchain provisioning. No crates are
 downloaded. The release target is recorded in provenance (GNU or MSVC).
 
 ```powershell
-cargo generate-lockfile --offline # only when the package version changes
+cargo generate-lockfile --offline # when package metadata requires a lockfile update
 .\scripts\Test.ps1 -Target x86_64-pc-windows-gnu
 .\scripts\Package.ps1 -Target x86_64-pc-windows-gnu
 ```

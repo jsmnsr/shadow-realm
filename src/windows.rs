@@ -249,7 +249,7 @@ fn marker_at(path: PathBuf) -> Result<()> {
     // including during panic unwinding.
     let operation = (move || {
         let mut file = file;
-        let payload = b"vss-write-demo: owned disposable-VM test file\r\n";
+        let payload = b"shadow-realm: owned disposable-VM test file\r\n";
         file.write_all(payload)
             .map_err(|error| format!("Write test file: {error}"))?;
         file.sync_all()
@@ -273,7 +273,7 @@ pub fn marker_probe(root: &str) -> Result<()> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("System clock: {error}"))?
         .as_nanos();
-    let name = format!("vss-write-demo-{}-{nonce}.tmp", std::process::id());
+    let name = format!("shadow-realm-{}-{nonce}.tmp", std::process::id());
     let path = Path::new(root).join(name);
     println!("Owned test file: {}", path.display());
     marker_at(path)
@@ -302,8 +302,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let directory =
-            std::env::temp_dir().join(format!("vss-demo-unit-test-{}-{nonce}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!(
+            "shadow-realm-unit-test-{}-{nonce}",
+            std::process::id()
+        ));
         fs::create_dir(&directory).unwrap();
         let path = directory.join("marker.tmp");
         marker_at(path.clone()).unwrap();

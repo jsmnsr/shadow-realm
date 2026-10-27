@@ -17,17 +17,17 @@ if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     throw 'Run this script from an elevated PowerShell terminal.'
 }
 if ([string]::IsNullOrWhiteSpace($ToolPath)) {
-    $ToolPath = Join-Path $PSScriptRoot 'vss-write-demo.exe'
+    $ToolPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'shadow-realm.exe'
 }
 $ToolPath = (Resolve-Path -LiteralPath $ToolPath).ProviderPath
 if (!(Test-Path -LiteralPath $ToolPath -PathType Leaf)) { throw 'ToolPath must identify the supplied executable.' }
 foreach ($command in 'Get-Disk', 'Initialize-Disk', 'New-Partition', 'Format-Volume', 'Get-CimInstance', 'diskpart.exe', 'vssadmin.exe') {
     Get-Command $command -ErrorAction Stop | Out-Null
 }
-if (!('VssDeletionDemo.NativeMethods' -as [type])) {
+if (!('ShadowRealmDemo.NativeMethods' -as [type])) {
     Add-Type -TypeDefinition @'
 using System.Runtime.InteropServices;
-namespace VssDeletionDemo {
+namespace ShadowRealmDemo {
     public static class NativeMethods {
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.U1)]
@@ -149,10 +149,10 @@ function Show-Stage([string]$Name, [bool]$SourceTargetExpected, [bool]$SnapshotT
 }
 
 $help = Invoke-Native $ToolPath @('--help') ''
-if ($help.ExitCode -ne 0 -or $help.Stdout -notmatch '^VSS write-state experiment 0\.4\.0-experimental\.1 --') {
+if ($help.ExitCode -ne 0 -or $help.Stdout -notmatch '^Shadow Realm 0\.4\.0-experimental\.1 --') {
     throw 'Use the matching v0.4.0-experimental.1 executable supplied with this demo.'
 }
-$parent = Join-Path $env:USERPROFILE 'VssLab'
+$parent = Join-Path $env:USERPROFILE 'ShadowRealmLab'
 $driveRoot = [IO.Path]::GetPathRoot($parent)
 if ($driveRoot -notmatch '^[A-Za-z]:\\$') { throw 'The lab directory must be on a local drive.' }
 if ((Get-Volume -DriveLetter $driveRoot.Substring(0, 1)).SizeRemaining -lt 5GB) {
@@ -199,7 +199,7 @@ try {
     $disk = Assert-LabDisk
     if (Get-PSDrive -Name $letter -ErrorAction SilentlyContinue) { throw 'The chosen drive letter became occupied.' }
     $partition = New-Partition -DiskNumber $disk.Number -UseMaximumSize -DriveLetter $letter
-    $partition | Format-Volume -FileSystem NTFS -NewFileSystemLabel 'VSS-DEMO' -Confirm:$false | Out-Host
+    $partition | Format-Volume -FileSystem NTFS -NewFileSystemLabel 'SHADOW-REALM' -Confirm:$false | Out-Host
     $volume = Get-Volume -DriveLetter $letter
     if ((Get-Partition -DriveLetter $letter).DiskNumber -ne $disk.Number) { throw 'Lab drive mapping changed.' }
 
@@ -232,7 +232,7 @@ try {
     if ($snapshot.DeviceObject -notmatch 'HarddiskVolumeShadowCopy([0-9]+)$') { throw 'Unexpected shadow-device path.' }
     $number = [int]$Matches[1]
     $view = Join-Path $run 'SnapshotView'
-    if (![VssDeletionDemo.NativeMethods]::CreateSymbolicLink($view, ($snapshot.DeviceObject + '\'), 1)) {
+    if (![ShadowRealmDemo.NativeMethods]::CreateSymbolicLink($view, ($snapshot.DeviceObject + '\'), 1)) {
         $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
         throw "Snapshot-view link creation failed: $([ComponentModel.Win32Exception]::new($errorCode).Message) (Win32 $errorCode)."
     }
@@ -282,7 +282,7 @@ try {
     } catch {
         if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw }
     }
-    $warnings = @($events | Where-Object { $_.Message.Contains("HarddiskVolumeShadowCopy$number") -or $_.Message.Contains('VSS-DEMO') })
+    $warnings = @($events | Where-Object { $_.Message.Contains("HarddiskVolumeShadowCopy$number") -or $_.Message.Contains('SHADOW-REALM') })
     if ($warnings.Count) {
         $warnings | Select-Object TimeCreated, Id, Message | ConvertTo-Json -Depth 3 |
             Set-Content -LiteralPath (Join-Path $run 'ntfs-warnings.json') -Encoding UTF8

@@ -16,16 +16,16 @@ const KNOWN_ATTRIBUTES: u64 = NO_DRIVE_LETTER | HIDDEN | SHADOW_COPY | READ_ONLY
 
 const HELP: &str = concat!(
     "\
-VSS write-state experiment ",
+Shadow Realm ",
     env!("CARGO_PKG_VERSION"),
     " -- DISPOSABLE WINDOWS VM ONLY
 
-  vss-write-demo inspect --snapshot NUMBER
-  vss-write-demo diagnose-lock --snapshot NUMBER --file RELATIVE_PATH --confirm-lab
-  vss-write-demo probe --snapshot NUMBER --confirm-lab --remount-snapshot
-  vss-write-demo restore-readonly --snapshot NUMBER --confirm-lab --remount-snapshot
-  vss-write-demo delete --snapshot NUMBER --file RELATIVE_PATH --dry-run
-  vss-write-demo delete --snapshot NUMBER --file RELATIVE_PATH --confirm-lab --confirm-delete
+  shadow-realm inspect --snapshot NUMBER
+  shadow-realm diagnose-lock --snapshot NUMBER --file RELATIVE_PATH --confirm-lab
+  shadow-realm probe --snapshot NUMBER --confirm-lab --remount-snapshot
+  shadow-realm restore-readonly --snapshot NUMBER --confirm-lab --remount-snapshot
+  shadow-realm delete --snapshot NUMBER --file RELATIVE_PATH --dry-run
+  shadow-realm delete --snapshot NUMBER --file RELATIVE_PATH --confirm-lab --confirm-delete
                        --remount-snapshot
 
 inspect: query attributes and the driver's writable status; no mutations.

@@ -42,7 +42,7 @@ try {
         '-Dwarnings'
     ) -join [char]31
     & (Join-Path $PSScriptRoot 'Test.ps1') -Target $Target
-    $executable = Join-Path $root "target\$Target\release\vss-write-demo.exe"
+    $executable = Join-Path $root "target\$Target\release\shadow-realm.exe"
     $binary = [IO.File]::ReadAllBytes($executable)
     $pe = [BitConverter]::ToInt32($binary, 0x3c)
     if ($binary[0] -ne 0x4d -or $binary[1] -ne 0x5a -or
@@ -62,14 +62,15 @@ try {
     }
     $files = @(
         'Cargo.toml', 'Cargo.lock', 'README.md', 'RELEASE-NOTES.md',
-        'Invoke-VssDeletionDemo.ps1', 'src\main.rs', 'src\windows.rs', 'src\deletion.rs',
+        'demo\README.md', 'demo\RESEARCH.md', 'demo\Invoke-ShadowRealmDemo.ps1',
+        'src\main.rs', 'src\windows.rs', 'src\deletion.rs',
         'scripts\Test.ps1', 'scripts\Package.ps1'
     )
     $entries = [ordered]@{}
     foreach ($file in $files) {
         $entries[$file.Replace('\', '/')] = [IO.File]::ReadAllBytes((Join-Path $root $file))
     }
-    $entries['vss-write-demo.exe'] = $binary
+    $entries['shadow-realm.exe'] = $binary
     $provenance = [ordered]@{
         version = $version
         source_commit = $commit
@@ -94,7 +95,7 @@ try {
     } finally { $sha.Dispose() }
     $entries['SHA256SUMS.txt'] = $utf8.GetBytes(($checksums -join "`n") + "`n")
     New-Item -ItemType Directory -Force -Path '.\dist' | Out-Null
-    $archiveName = "vss-write-demo-$version-windows-x64.zip"
+    $archiveName = "shadow-realm-$version-windows-x64.zip"
     $archivePath = Join-Path $root "dist\$archiveName"
     if (Test-Path -LiteralPath $archivePath) { throw 'Archive already exists; do not overwrite a published asset.' }
     Add-Type -AssemblyName System.IO.Compression

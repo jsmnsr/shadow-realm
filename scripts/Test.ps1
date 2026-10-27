@@ -18,7 +18,7 @@ try {
         $env:CARGO_ENCODED_RUSTFLAGS = $oldEncodedFlags + [char]31 + '-Dwarnings'
     }
     $env:CARGO_TARGET_DIR = Join-Path $root 'target'
-    foreach ($script in @('Invoke-VssDeletionDemo.ps1', 'scripts\Test.ps1', 'scripts\Package.ps1')) {
+    foreach ($script in @('demo\Invoke-ShadowRealmDemo.ps1', 'scripts\Test.ps1', 'scripts\Package.ps1')) {
         $tokens = $null
         $errors = $null
         [void][Management.Automation.Language.Parser]::ParseFile(
@@ -33,7 +33,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Windows unit tests failed.' }
     & cargo build --release --locked --offline --target $Target
     if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed.' }
-    $executable = Join-Path $root "target\$Target\release\vss-write-demo.exe"
+    $executable = Join-Path $root "target\$Target\release\shadow-realm.exe"
     $oldPath = $env:PATH
     try {
         $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
@@ -43,18 +43,21 @@ try {
     $metadata = & cargo metadata --locked --offline --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed.' }
     $version = ($metadata | ConvertFrom-Json).packages[0].version
-    if ($help[0] -cne "VSS write-state experiment $version -- DISPOSABLE WINDOWS VM ONLY") {
+    if ($help[0] -cne "Shadow Realm $version -- DISPOSABLE WINDOWS VM ONLY") {
         throw 'Executable version/help mismatch.'
     }
-    $demo = Get-Content -LiteralPath '.\Invoke-VssDeletionDemo.ps1' -Raw
+    $demo = Get-Content -LiteralPath '.\demo\Invoke-ShadowRealmDemo.ps1' -Raw
     if (!$demo.Contains(([regex]::Escape($version))) -or
         !$demo.Contains("'--remount-snapshot') 'snapshot-deletion'")) {
         throw 'Demo version or remount invocation does not match the release.'
     }
+    if (!$demo.Contains('$ToolPath = Join-Path (Split-Path $PSScriptRoot -Parent) ''shadow-realm.exe''')) {
+        throw 'Demo default executable path does not match the release layout.'
+    }
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = 'powershell.exe'
     $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
-        (Join-Path $root 'Invoke-VssDeletionDemo.ps1') + '"'
+        (Join-Path $root 'demo\Invoke-ShadowRealmDemo.ps1') + '"'
     $info.UseShellExecute = $false
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
