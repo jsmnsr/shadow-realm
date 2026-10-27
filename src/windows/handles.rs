@@ -1,6 +1,6 @@
 //! Synchronous Win32 file opening with uniquely owned, automatically closed handles.
 
-use crate::error::{Error, Result};
+use anyhow::{Error, Result};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
@@ -11,10 +11,8 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 pub(super) fn win32_error(operation: &str, error: io::Error) -> Error {
-    Error::context(
-        format!("{operation} (Win32 {:?})", error.raw_os_error()),
-        error,
-    )
+    let context = format!("{operation} (Win32 {:?})", error.raw_os_error());
+    Error::new(error).context(context)
 }
 
 pub(super) fn open_file_handle(
@@ -25,7 +23,7 @@ pub(super) fn open_file_handle(
 ) -> Result<OwnedHandle> {
     let mut name: Vec<u16> = path.as_os_str().encode_wide().collect();
     if name.contains(&0) {
-        return Err("Win32 file paths cannot contain embedded NUL characters".into());
+        anyhow::bail!("Win32 file paths cannot contain embedded NUL characters");
     }
     name.push(0);
     // SAFETY: name is a live, NUL-terminated UTF-16 buffer. Optional security
@@ -60,6 +58,6 @@ mod tests {
     #[test]
     fn embedded_nul_is_rejected_before_windows_can_truncate_the_path() {
         let error = open_file_handle(Path::new("unused\0suffix"), GENERIC_READ, 0, 0).unwrap_err();
-        assert!(error.to_string().contains("embedded NUL"));
+        assert!(format!("{error:#}").contains("embedded NUL"));
     }
 }

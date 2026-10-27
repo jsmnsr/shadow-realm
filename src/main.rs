@@ -20,14 +20,14 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Err(error) => {
-            eprintln!("{error}\nUse --help for usage.");
+            eprintln!("{error:?}\nUse --help for usage.");
             return ExitCode::from(2);
         }
     };
     match app::run(&options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("ERROR: {error}");
+            eprintln!("ERROR: {error:?}");
             ExitCode::FAILURE
         }
     }

@@ -1,9 +1,9 @@
 //! Buffered Win32 volume controls and reopen-based filesystem mounting.
 
 use super::handles::{open_file_handle, win32_error};
-use crate::error::{Error, Result};
 use crate::paths::snapshot_path;
 use crate::snapshot::Volume;
+use anyhow::{Context, Result};
 use std::fs;
 use std::io;
 use std::num::NonZeroU32;
@@ -115,9 +115,7 @@ impl Volume for SnapshotVolume {
             .map_err(|error| win32_error("IOCTL_VOLUME_GET_GPT_ATTRIBUTES", error))?;
         let expected = size_of_val(&output);
         if usize::try_from(returned).ok() != Some(expected) {
-            return Err(
-                format!("Attribute query returned {returned} bytes; expected {expected}").into(),
-            );
+            anyhow::bail!("Attribute query returned {returned} bytes; expected {expected}");
         }
         Ok(output.GptAttributes)
     }
@@ -183,9 +181,8 @@ impl Volume for SnapshotVolume {
         // A directory access requests a filesystem mount, rather than assuming
         // that opening a direct volume handle alone mounted the filesystem.
         let root = format!("{}\\", self.path);
-        let directory = fs::read_dir(&root).map_err(|error| {
-            Error::context("Access snapshot root to request filesystem mount", error)
-        })?;
+        let directory =
+            fs::read_dir(&root).context("Access snapshot root to request filesystem mount")?;
         drop(directory);
         println!("Snapshot root is accessible after reopen.");
         Ok(())

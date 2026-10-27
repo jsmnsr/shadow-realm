@@ -3,7 +3,6 @@
 #![forbid(unsafe_code)]
 
 use crate::cli::Options;
-use crate::error::Result;
 #[cfg(windows)]
 use crate::{
     cli::Command,
@@ -13,6 +12,9 @@ use crate::{
     },
     windows::{self, deletion},
 };
+#[cfg(windows)]
+use anyhow::Context;
+use anyhow::Result;
 #[cfg(windows)]
 use windows_sys::Win32::System::Ioctl::{
     GPT_BASIC_DATA_ATTRIBUTE_READ_ONLY as READ_ONLY,
@@ -47,14 +49,14 @@ pub(crate) fn run(options: &Options) -> Result<()> {
             let relative = options
                 .file
                 .as_deref()
-                .ok_or("diagnose-lock requires --file")?;
+                .context("diagnose-lock requires --file")?;
             diagnose_lock(&mut volume, || {
                 deletion::preview(&path, relative).map(|_| ())
             })
         }
         Command::Delete => {
             check_snapshot_attributes(volume.attributes()?)?;
-            let relative = options.file.as_deref().ok_or("delete requires --file")?;
+            let relative = options.file.as_deref().context("delete requires --file")?;
             let expected = deletion::preview(&path, relative)?;
             if options.dry_run {
                 println!("DRY RUN: no attributes changed and no file deleted.");
@@ -73,5 +75,5 @@ pub(crate) fn run(options: &Options) -> Result<()> {
 
 #[cfg(not(windows))]
 pub(crate) fn run(_options: &Options) -> Result<()> {
-    Err("This experiment requires Windows. No operation was performed.".into())
+    anyhow::bail!("This experiment requires Windows. No operation was performed.")
 }

@@ -41,7 +41,35 @@ fn no_arguments_show_help_without_opening_a_device() {
     let output = run(&[]);
     assert!(output.status.success());
     assert_eq!(output.stdout, run(&["--help"]).stdout);
+    assert_eq!(output.stdout, run(&["-h"]).stdout);
     assert_eq!(output.stderr, Vec::<u8>::new());
+}
+
+#[test]
+fn error_output_preserves_causes_and_opt_in_backtraces() {
+    for backtrace in ["0", "1"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_shadow-realm"))
+            .args(["inspect", "--snapshot", "4294967296"])
+            .env("RUST_LIB_BACKTRACE", backtrace)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(output.stdout, Vec::<u8>::new());
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            error.contains("--snapshot is outside the u32 range"),
+            "{error}"
+        );
+        assert!(
+            error.contains("number too large to fit in target type"),
+            "{error}"
+        );
+        assert_eq!(
+            error.contains("Stack backtrace:"),
+            backtrace == "1",
+            "{error}"
+        );
+    }
 }
 
 #[test]

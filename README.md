@@ -113,8 +113,10 @@ boundaries; policy and parsing forbid it.
 Prefer established, actively maintained crates over reimplementing platform
 APIs or general-purpose infrastructure. Evaluate maintenance, licensing, and
 compiler compatibility; enable only needed features and commit `Cargo.lock`.
-Microsoft's `windows-sys` supplies the Win32 bindings, while our code handles
-ownership, validation, and snapshot policy.
+Microsoft's `windows-sys` supplies Win32 bindings, `clap` parses arguments,
+`anyhow` preserves error context/backtraces, and `tempfile` manages test fixtures.
+Our code retains ownership, validation, snapshot policy, and explicit cleanup
+failure reporting.
 
 `scripts\Test.ps1` fetches locked dependencies, then verifies the utility without
 live VSS operations. `scripts\Package.ps1` creates the release ZIP from a clean

@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use crate::error::Result;
+use anyhow::Result;
 use std::num::NonZeroU32;
 
 // Reserve space for the device prefix below Windows' extended-path length limit.
@@ -14,18 +14,16 @@ pub(crate) fn snapshot_path(number: NonZeroU32) -> String {
 
 pub(crate) fn validate_relative_file(path: &str) -> Result<()> {
     if path.is_empty() || path.encode_utf16().count() > MAX_RELATIVE_UTF16 {
-        return Err(
+        anyhow::bail!(
             "--file must be a nonempty snapshot-relative path shorter than 30001 UTF-16 units"
-                .into(),
         );
     }
     if path
         .chars()
         .any(|ch| ch.is_control() || "/:*?\"<>|".contains(ch))
     {
-        return Err(
+        anyhow::bail!(
             "--file cannot contain a drive, stream, wildcard, control character, or forward slash"
-                .into(),
         );
     }
     for component in path.split('\\') {
@@ -34,7 +32,9 @@ pub(crate) fn validate_relative_file(path: &str) -> Result<()> {
             || component == ".."
             || component.ends_with(['.', ' '])
         {
-            return Err("--file must not be rooted, contain traversal/empty components, or end a component with a dot/space".into());
+            anyhow::bail!(
+                "--file must not be rooted, contain traversal/empty components, or end a component with a dot/space"
+            );
         }
         let stem = component
             .split('.')
@@ -54,7 +54,7 @@ pub(crate) fn validate_relative_file(path: &str) -> Result<()> {
                         .is_some_and(|ch| matches!(ch, '1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'))
             })
         }) {
-            return Err("--file cannot contain reserved DOS device names".into());
+            anyhow::bail!("--file cannot contain reserved DOS device names");
         }
     }
     Ok(())

@@ -1,8 +1,8 @@
 //! Pins non-reparse paths and deletes one identity-checked file through its exclusive handle.
 
-use super::handles::open_file_handle;
-use crate::error::{Error, Result};
+use super::handles::{open_file_handle, win32_error};
 use crate::paths::validate_relative_file;
+use anyhow::{Context, Result};
 use std::fs;
 use std::io;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
@@ -36,7 +36,7 @@ fn information(handle: &OwnedHandle) -> Result<BY_HANDLE_FILE_INFORMATION> {
     // SAFETY: handle remains live and info is writable, properly aligned storage
     // matching BY_HANDLE_FILE_INFORMATION for the duration of the call.
     if unsafe { GetFileInformationByHandle(handle.as_raw_handle(), &raw mut info) } == 0 {
-        return Err(Error::context(
+        return Err(win32_error(
             "GetFileInformationByHandle",
             io::Error::last_os_error(),
         ));
@@ -46,8 +46,7 @@ fn information(handle: &OwnedHandle) -> Result<BY_HANDLE_FILE_INFORMATION> {
 
 fn identity(handle: &OwnedHandle, info: &BY_HANDLE_FILE_INFORMATION) -> Result<Identity> {
     let mut id = FILE_ID_INFO::default();
-    let size = u32::try_from(size_of_val(&id))
-        .map_err(|error| Error::context("File identity buffer size", error))?;
+    let size = u32::try_from(size_of_val(&id)).context("File identity buffer size")?;
     // SAFETY: FileIdInfo selects the SDK FILE_ID_INFO layout; id is aligned,
     // writable, and lives through the synchronous call. The handle is borrowed.
     if unsafe {
@@ -59,7 +58,7 @@ fn identity(handle: &OwnedHandle, info: &BY_HANDLE_FILE_INFORMATION) -> Result<I
         )
     } == 0
     {
-        return Err(Error::context(
+        return Err(win32_error(
             "Query 128-bit file identity",
             io::Error::last_os_error(),
         ));
@@ -93,10 +92,10 @@ fn pin_directory(path: &Path) -> Result<OwnedHandle> {
     )?;
     let info = information(&handle)?;
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(format!("Refusing a reparse-point directory: {}", path.display()).into());
+        anyhow::bail!("Refusing a reparse-point directory: {}", path.display());
     }
     if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
-        return Err(format!("Not a directory: {}", path.display()).into());
+        anyhow::bail!("Not a directory: {}", path.display());
     }
     Ok(handle)
 }
@@ -118,10 +117,10 @@ fn open_checked(root: &str, relative: &str, deleting: bool) -> Result<CheckedFil
     let file = open_file_handle(&path, access, 0, OPEN_REPARSE_BACKUP)?;
     let info = information(&file)?;
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(format!("Refusing a reparse-point file: {}", path.display()).into());
+        anyhow::bail!("Refusing a reparse-point file: {}", path.display());
     }
     if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
-        return Err("Only one regular file can be deleted; directories are not accepted".into());
+        anyhow::bail!("Only one regular file can be deleted; directories are not accepted");
     }
     let identity = identity(&file, &info)?;
     Ok(CheckedFile {
@@ -148,8 +147,8 @@ pub(crate) fn preview(root: &str, relative: &str) -> Result<Identity> {
 pub(crate) fn delete_file(root: &str, relative: &str, expected: &Identity) -> Result<()> {
     let checked = open_checked(root, relative, true)?;
     if &checked.identity != expected {
-        return Err(
-            "Target identity, size, or timestamps changed after preview; nothing deleted".into(),
+        anyhow::bail!(
+            "Target identity, size, or timestamps changed after preview; nothing deleted"
         );
     }
     let CheckedFile {
@@ -159,8 +158,7 @@ pub(crate) fn delete_file(root: &str, relative: &str, expected: &Identity) -> Re
         ..
     } = checked;
     let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
-    let size = u32::try_from(size_of_val(&disposition))
-        .map_err(|error| Error::context("File disposition buffer size", error))?;
+    let size = u32::try_from(size_of_val(&disposition)).context("File disposition buffer size")?;
     // SAFETY: file is a live handle opened with DELETE access. The selected class
     // reads the SDK disposition structure, which stays live until the call returns.
     if unsafe {
@@ -172,7 +170,7 @@ pub(crate) fn delete_file(root: &str, relative: &str, expected: &Identity) -> Re
         )
     } == 0
     {
-        return Err(Error::context(
+        return Err(win32_error(
             "Delete selected file by handle",
             io::Error::last_os_error(),
         ));
@@ -186,14 +184,11 @@ pub(crate) fn delete_file(root: &str, relative: &str, expected: &Identity) -> Re
             );
             Ok(())
         }
-        Ok(_) => Err(
+        Ok(_) => Err(anyhow::anyhow!(
             "Deletion was requested but the selected name is still present; state is uncertain"
-                .into(),
-        ),
-        Err(error) => Err(Error::context(
-            "Deletion requested, but absence could not be verified",
-            error,
         )),
+        Err(error) => Err(anyhow::Error::from(error)
+            .context("Deletion requested, but absence could not be verified")),
     };
     drop(parents);
     result
@@ -203,22 +198,8 @@ pub(crate) fn delete_file(root: &str, relative: &str, expected: &Identity) -> Re
 mod tests {
     use super::*;
     use std::os::windows::fs::OpenOptionsExt;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use windows_sys::Win32::Foundation::GENERIC_WRITE;
     use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_WRITE};
-
-    fn area() -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "shadow-realm-delete-test-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir(&path).unwrap();
-        path
-    }
 
     #[test]
     fn native_timestamps_preserve_both_halves() {
@@ -231,7 +212,8 @@ mod tests {
 
     #[test]
     fn preview_is_read_only_and_deletion_removes_only_the_selected_file() {
-        let root = area();
+        let area = tempfile::tempdir().unwrap();
+        let root = area.path();
         fs::create_dir(root.join("nested")).unwrap();
         let target = root.join("nested").join("data.bat");
         fs::write(&target, b"test-only content").unwrap();
@@ -243,14 +225,13 @@ mod tests {
         delete_file(name, r"nested\data.bat", &id).unwrap();
         assert!(!target.exists());
         assert_eq!(fs::read(&sentinel).unwrap(), b"unchanged");
-        fs::remove_file(sentinel).unwrap();
-        fs::remove_dir(root.join("nested")).unwrap();
-        fs::remove_dir(root).unwrap();
+        area.close().unwrap();
     }
 
     #[test]
     fn changed_target_and_directories_are_not_deleted() {
-        let root = area();
+        let area = tempfile::tempdir().unwrap();
+        let root = area.path();
         let target = root.join("target");
         fs::write(&target, b"before").unwrap();
         let name = root.to_str().unwrap();
@@ -261,14 +242,13 @@ mod tests {
         fs::create_dir(root.join("folder")).unwrap();
         assert!(preview(name, "folder").is_err());
         assert!(preview(name, "missing").is_err());
-        fs::remove_file(target).unwrap();
-        fs::remove_dir(root.join("folder")).unwrap();
-        fs::remove_dir(root).unwrap();
+        area.close().unwrap();
     }
 
     #[test]
     fn busy_and_readonly_files_are_not_forced_and_attributes_are_preserved() {
-        let root = area();
+        let area = tempfile::tempdir().unwrap();
+        let root = area.path();
         let target = root.join("target");
         fs::write(&target, b"keep").unwrap();
         let name = root.to_str().unwrap();
@@ -288,13 +268,13 @@ mod tests {
         assert!(delete_file(name, "target", &id).is_err());
         assert!(fs::metadata(&target).unwrap().permissions().readonly());
         fs::set_permissions(&target, original_permissions).unwrap();
-        fs::remove_file(target).unwrap();
-        fs::remove_dir(root).unwrap();
+        area.close().unwrap();
     }
 
     #[test]
     fn pinned_parent_cannot_be_renamed_during_the_operation() {
-        let root = area();
+        let area = tempfile::tempdir().unwrap();
+        let root = area.path();
         fs::create_dir(root.join("parent")).unwrap();
         fs::write(root.join("parent").join("file"), b"keep").unwrap();
         let checked = open_checked(root.to_str().unwrap(), r"parent\file", false).unwrap();
@@ -318,22 +298,22 @@ mod tests {
             )
             .unwrap(),
         );
-        fs::remove_file(root.join("parent").join("file")).unwrap();
-        fs::remove_dir(root.join("parent")).unwrap();
-        fs::remove_dir(root).unwrap();
+        area.close().unwrap();
     }
 
     #[test]
     fn junction_cannot_redirect_deletion_outside_the_selected_root() {
-        let root = area();
-        let outside = area();
-        let sentinel = outside.join("sentinel");
+        let area = tempfile::tempdir().unwrap();
+        let root = area.path();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_root = outside.path();
+        let sentinel = outside_root.join("sentinel");
         fs::write(&sentinel, b"outside").unwrap();
         let junction = root.join("junction");
         let output = std::process::Command::new("cmd.exe")
             .args(["/d", "/c", "mklink", "/J"])
             .arg(&junction)
-            .arg(&outside)
+            .arg(outside_root)
             .output()
             .unwrap();
         assert!(
@@ -344,27 +324,28 @@ mod tests {
         assert!(
             preview(root.to_str().unwrap(), r"junction\sentinel")
                 .unwrap_err()
-                .to_string()
-                .contains("reparse")
+                .chain()
+                .any(|cause| cause.to_string().contains("reparse"))
         );
         assert!(
             preview(root.to_str().unwrap(), "junction")
                 .unwrap_err()
-                .to_string()
-                .contains("reparse")
+                .chain()
+                .any(|cause| cause.to_string().contains("reparse"))
         );
-        let outside_id = preview(outside.to_str().unwrap(), "sentinel").unwrap();
+        let outside_id = preview(outside_root.to_str().unwrap(), "sentinel").unwrap();
         assert!(delete_file(root.to_str().unwrap(), r"junction\sentinel", &outside_id).is_err());
         assert_eq!(fs::read(&sentinel).unwrap(), b"outside");
         fs::remove_dir(junction).unwrap();
-        fs::remove_file(sentinel).unwrap();
-        fs::remove_dir(outside).unwrap();
-        fs::remove_dir(root).unwrap();
+        area.close().unwrap();
+        assert_eq!(fs::read(&sentinel).unwrap(), b"outside");
+        outside.close().unwrap();
     }
 
     #[test]
     fn replacement_with_same_contents_is_not_deleted() {
-        let root = area();
+        let area = tempfile::tempdir().unwrap();
+        let root = area.path();
         let target = root.join("target");
         fs::write(&target, b"same content").unwrap();
         let id = preview(root.to_str().unwrap(), "target").unwrap();
@@ -372,14 +353,13 @@ mod tests {
         fs::write(&target, b"same content").unwrap();
         assert!(delete_file(root.to_str().unwrap(), "target", &id).is_err());
         assert_eq!(fs::read(&target).unwrap(), b"same content");
-        fs::remove_file(target).unwrap();
-        fs::remove_file(root.join("original")).unwrap();
-        fs::remove_dir(root).unwrap();
+        area.close().unwrap();
     }
 
     #[test]
     fn deleting_one_hard_link_does_not_erase_the_other_name() {
-        let root = area();
+        let area = tempfile::tempdir().unwrap();
+        let root = area.path();
         let target = root.join("target");
         let alias = root.join("alias");
         fs::write(&target, b"shared data").unwrap();
@@ -388,7 +368,6 @@ mod tests {
         delete_file(root.to_str().unwrap(), "target", &id).unwrap();
         assert!(!target.exists());
         assert_eq!(fs::read(&alias).unwrap(), b"shared data");
-        fs::remove_file(alias).unwrap();
-        fs::remove_dir(root).unwrap();
+        area.close().unwrap();
     }
 }

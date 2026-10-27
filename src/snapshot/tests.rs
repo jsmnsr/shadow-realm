@@ -44,11 +44,11 @@ fn lock_diagnosis_reports_each_failed_stage_without_force_or_retry() {
         .unwrap_err();
         assert_eq!(previews, 1);
         assert_eq!(
-            error.to_string().contains("BEFORE PREVIEW: LOCK FAILED"),
+            format!("{error:#}").contains("BEFORE PREVIEW: LOCK FAILED"),
             failures.contains(&("lock", 1))
         );
         assert_eq!(
-            error.to_string().contains("AFTER PREVIEW: LOCK FAILED"),
+            format!("{error:#}").contains("AFTER PREVIEW: LOCK FAILED"),
             failures.contains(&("lock", 2))
         );
         assert_eq!(
@@ -91,7 +91,7 @@ fn lock_diagnosis_stops_immediately_on_unlock_failure() {
             Ok(())
         })
         .unwrap_err();
-        assert!(error.to_string().contains("UNLOCK FAILED"));
+        assert!(format!("{error:#}").contains("UNLOCK FAILED"));
         assert_eq!(previews, failed_unlock - 1);
         assert_eq!(volume.events.len(), failed_unlock * 2);
         assert_eq!(volume.sets, Vec::<u64>::new());
@@ -107,13 +107,14 @@ fn lock_diagnosis_preserves_preview_and_prior_lock_errors() {
         if first_lock_fails {
             volume.failures.push(("lock", 1));
         }
-        let error = diagnose_lock(&mut volume, || Err("missing target".into())).unwrap_err();
-        assert!(error.to_string().contains("PREVIEW FAILED: missing target"));
+        let error =
+            diagnose_lock(&mut volume, || Err(anyhow::anyhow!("missing target"))).unwrap_err();
+        assert!(format!("{error:#}").contains("PREVIEW FAILED: missing target"));
         assert_eq!(
-            error.to_string().contains("BEFORE PREVIEW: LOCK FAILED"),
+            format!("{error:#}").contains("BEFORE PREVIEW: LOCK FAILED"),
             first_lock_fails
         );
-        assert!(!error.to_string().contains("AFTER PREVIEW"));
+        assert!(!format!("{error:#}").contains("AFTER PREVIEW"));
         assert_eq!(volume.sets, Vec::<u64>::new());
         assert!(!volume.locked);
     }
@@ -182,7 +183,7 @@ impl MockVolume {
         }
         let count = self.events.iter().filter(|event| **event == name).count();
         if self.failures.contains(&(name, count)) {
-            Err(format!("simulated {name} failure").into())
+            Err(anyhow::anyhow!("simulated {name} failure"))
         } else {
             Ok(())
         }
@@ -202,9 +203,9 @@ impl Volume for MockVolume {
             self.attributes = attributes;
         }
         if enabling && self.fail_enable {
-            Err("simulated partial enable failure".into())
+            Err(anyhow::anyhow!("simulated partial enable failure"))
         } else if !enabling && self.fail_restore {
-            Err("simulated restoration failure".into())
+            Err(anyhow::anyhow!("simulated restoration failure"))
         } else {
             Ok(())
         }
@@ -267,10 +268,12 @@ fn successful_probe_restores_exact_original_attributes() {
 fn failed_file_operation_still_restores() {
     let mut volume = MockVolume::default();
     assert!(
-        probe(&mut volume, true, || Err("file creation denied".into()))
-            .unwrap_err()
-            .to_string()
-            .contains("file creation denied")
+        probe(&mut volume, true, || Err(anyhow::anyhow!(
+            "file creation denied"
+        )))
+        .unwrap_err()
+        .chain()
+        .any(|cause| cause.to_string().contains("file creation denied"))
     );
     assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
     assert_eq!(volume.sets.len(), 2);
@@ -283,7 +286,7 @@ fn failed_enable_attempt_still_restores_without_running_action() {
         ..Default::default()
     };
     let error = probe(&mut volume, true, || panic!("must not run")).unwrap_err();
-    assert!(error.to_string().contains("partial enable failure"));
+    assert!(format!("{error:#}").contains("partial enable failure"));
     assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
     assert_eq!(volume.sets.len(), 2);
 }
@@ -294,9 +297,9 @@ fn preserves_both_operation_and_restoration_errors() {
         fail_restore: true,
         ..Default::default()
     };
-    let error = probe(&mut volume, true, || Err("file failure".into())).unwrap_err();
-    assert!(error.to_string().contains("file failure"));
-    assert!(error.to_string().contains("RESTORATION FAILED"));
+    let error = probe(&mut volume, true, || Err(anyhow::anyhow!("file failure"))).unwrap_err();
+    assert!(format!("{error:#}").contains("file failure"));
+    assert!(format!("{error:#}").contains("RESTORATION FAILED"));
 }
 
 #[test]
@@ -308,8 +311,8 @@ fn restoration_failure_prevents_success() {
     assert!(
         probe(&mut volume, true, || Ok(()))
             .unwrap_err()
-            .to_string()
-            .contains("RESTORATION FAILED")
+            .chain()
+            .any(|cause| cause.to_string().contains("RESTORATION FAILED"))
     );
 }
 
@@ -322,8 +325,8 @@ fn rejects_unobserved_attribute_transition() {
     assert!(
         probe(&mut volume, true, || panic!("must not run"))
             .unwrap_err()
-            .to_string()
-            .contains("transition not observed")
+            .chain()
+            .any(|cause| cause.to_string().contains("transition not observed"))
     );
     assert_eq!(volume.sets.len(), 2);
 }
@@ -337,8 +340,8 @@ fn refuses_write_probe_when_driver_still_reports_write_protection() {
     assert!(
         probe(&mut volume, true, || panic!("must not run"))
             .unwrap_err()
-            .to_string()
-            .contains("still reports write protection")
+            .chain()
+            .any(|cause| cause.to_string().contains("still reports write protection"))
     );
     assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
     assert_eq!(volume.sets.len(), 2);
@@ -438,7 +441,7 @@ fn each_failed_enable_stage_prevents_file_action_and_attempts_restoration() {
             ..Default::default()
         };
         let error = probe(&mut volume, true, || panic!("must not run")).unwrap_err();
-        assert!(error.to_string().contains(stage), "{error}");
+        assert!(format!("{error:#}").contains(stage), "{error:#}");
         assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
         assert!(!volume.locked);
     }
@@ -472,8 +475,8 @@ fn restoration_remount_failure_is_not_success() {
         };
         let error = probe(&mut volume, true, || Ok(())).unwrap_err();
         assert!(
-            error.to_string().contains("RESTORATION FAILED"),
-            "{stage}: {error}"
+            format!("{error:#}").contains("RESTORATION FAILED"),
+            "{stage}: {error:#}"
         );
         assert!(!volume.locked);
         if stage == "lock" {
@@ -495,7 +498,7 @@ fn remount_reports_primary_unlock_and_reopen_errors_together() {
     };
     let error = change_attributes(&mut volume, KNOWN_ATTRIBUTES & !READ_ONLY, true).unwrap_err();
     for expected in ["dismount", "unlock", "REOPEN FAILED"] {
-        assert!(error.to_string().contains(expected), "{error}");
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
     }
     assert!(!volume.locked);
 }
@@ -503,7 +506,12 @@ fn remount_reports_primary_unlock_and_reopen_errors_together() {
 #[test]
 fn remount_restoration_also_runs_on_file_failure_and_unwinding() {
     let mut volume = MockVolume::default();
-    assert!(probe(&mut volume, true, || Err("file is still read-only".into())).is_err());
+    assert!(
+        probe(&mut volume, true, || Err(anyhow::anyhow!(
+            "file is still read-only"
+        )))
+        .is_err()
+    );
     assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
     assert_eq!(
         volume

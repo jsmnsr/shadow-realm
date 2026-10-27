@@ -48,6 +48,14 @@ the [MIT license](LICENSE), which is included in release archives.
   NULs at the native file-opening boundary, and made snapshot numbers nonzero
   by construction.
 - Preserved the CLI flags, exit codes, and remount-based safety policy.
+- Replaced custom error/backtrace plumbing with `anyhow`, retaining both
+  operation and cleanup failures and opt-in backtraces in diagnostics.
+- Replaced manual argument scanning with `clap`, retaining explicit consent
+  checks, duplicate rejection, option-like filenames, and the existing help.
+  Standard `--option=value` syntax is now also accepted.
+- Replaced homemade temporary test directories with test-only `tempfile`.
+  Explicit cleanup still reports failures; the production probe and snapshot
+  restoration guards retain their failure-reporting behavior.
 
 ## Official Windows bindings
 

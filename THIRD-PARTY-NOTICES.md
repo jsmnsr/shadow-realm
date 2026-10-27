@@ -1,21 +1,32 @@
 # Third-party notices
 
-Shadow Realm uses the following crates from
-[Microsoft's windows-rs project](https://github.com/microsoft/windows-rs).
-Both are offered under `MIT OR Apache-2.0`; this distribution uses their MIT
-license option, reproduced below.
+These crates are resolved for the Windows x64 build and tests. All offer MIT
+and Apache-2.0 as alternative licenses; this distribution uses the MIT option.
+The shared MIT terms below apply to each crate with its upstream copyright
+notice shown here. A dash means the supplied `LICENSE-MIT` has no copyright line.
 
-| Crate | Version | Upstream license |
+| Crate | Version | Upstream MIT copyright notice |
 | --- | --- | --- |
-| windows-sys | 0.61.2 | MIT OR Apache-2.0 |
-| windows-link | 0.2.1 | MIT OR Apache-2.0 |
+| anstyle | 1.0.14 | Copyright (c) Individual contributors |
+| anyhow | 1.0.104 | - |
+| cfg-if | 1.0.5 | Copyright (c) 2014 Alex Crichton |
+| clap | 4.6.7 | Copyright (c) Individual contributors |
+| clap_builder | 4.6.7 | Copyright (c) Individual contributors |
+| clap_lex | 1.1.1 | Copyright (c) Individual contributors |
+| fastrand | 2.5.0 | - |
+| getrandom | 0.4.3 | Copyright (c) 2018-2026 The rust-random Project Developers; Copyright (c) 2014 The Rust Project Developers |
+| once_cell | 1.21.4 | - |
+| tempfile | 3.27.0 | Copyright (c) 2015 Steven Allen |
+| windows-link | 0.2.1 | Copyright (c) Microsoft Corporation. |
+| windows-sys | 0.61.2 | Copyright (c) Microsoft Corporation. |
+
+`tempfile` and its additional dependencies (`cfg-if`, `fastrand`, `getrandom`,
+and `once_cell`) are test-only, not linked into the release executable.
 
 When changing dependencies, review their licenses and update this notice.
 Packaging checks that every resolved dependency's name and version is listed.
 
 ## MIT License
-
-Copyright (c) Microsoft Corporation.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
