@@ -61,11 +61,20 @@ try {
         }
     }
     $files = @(
-        'Cargo.toml', 'Cargo.lock', 'README.md', 'RELEASE-NOTES.md',
+        'Cargo.toml', 'Cargo.lock', 'LICENSE', 'README.md', 'RELEASE-NOTES.md',
         'demo\README.md', 'demo\RESEARCH.md', 'demo\Invoke-ShadowRealmDemo.ps1',
-        'src\main.rs', 'src\windows.rs', 'src\deletion.rs',
+        'src\main.rs', 'src\app.rs', 'src\cli.rs', 'src\error.rs',
+        'src\paths.rs', 'src\snapshot.rs', 'src\snapshot\tests.rs', 'src\windows\mod.rs',
+        'src\windows\handles.rs', 'src\windows\volume.rs',
+        'src\windows\deletion.rs', 'src\windows\marker.rs',
+        'tests\cli.rs',
         'scripts\Test.ps1', 'scripts\Package.ps1'
     )
+    $rustSources = @(Get-ChildItem -LiteralPath (Join-Path $root 'src'), (Join-Path $root 'tests') -Filter '*.rs' -File -Recurse |
+        ForEach-Object { $_.FullName.Substring($root.Length + 1) })
+    if (@(Compare-Object @($files | Where-Object { $_.EndsWith('.rs') }) $rustSources).Count) {
+        throw 'Release allowlist does not match the Rust source and test files.'
+    }
     $entries = [ordered]@{}
     foreach ($file in $files) {
         $entries[$file.Replace('\', '/')] = [IO.File]::ReadAllBytes((Join-Path $root $file))
@@ -73,6 +82,7 @@ try {
     $entries['shadow-realm.exe'] = $binary
     $provenance = [ordered]@{
         version = $version
+        license = 'MIT'
         source_commit = $commit
         source_committed_at = $commitTime
         target = $Target
@@ -80,7 +90,7 @@ try {
         cargo = $cargo
         build = "cargo build --release --locked --offline --target $Target"
         flags = 'warnings denied; symbols stripped; workspace, sysroot and user-profile paths remapped'
-        validation = 'Windows unit tests, Clippy, rustfmt, PowerShell syntax and consent gate; no live VSS test'
+        validation = 'Windows unit and CLI tests, Clippy, rustfmt, PowerShell syntax and consent gate; no live VSS test'
         experimental = $true
         authenticode_signed = $false
     } | ConvertTo-Json

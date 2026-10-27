@@ -30,7 +30,7 @@ try {
     & cargo clippy --locked --offline --target $Target --all-targets -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw 'Clippy failed; install the matching toolchain component if missing.' }
     & cargo test --locked --offline --target $Target
-    if ($LASTEXITCODE -ne 0) { throw 'Windows unit tests failed.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Windows Rust tests failed.' }
     & cargo build --release --locked --offline --target $Target
     if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed.' }
     $executable = Join-Path $root "target\$Target\release\shadow-realm.exe"
@@ -42,7 +42,12 @@ try {
     } finally { $env:PATH = $oldPath }
     $metadata = & cargo metadata --locked --offline --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed.' }
-    $version = ($metadata | ConvertFrom-Json).packages[0].version
+    $package = ($metadata | ConvertFrom-Json).packages[0]
+    $version = $package.version
+    if ($package.license -cne 'MIT' -or
+        !(Test-Path -LiteralPath (Join-Path $root 'LICENSE') -PathType Leaf)) {
+        throw 'MIT package metadata and the distributed LICENSE file are required.'
+    }
     if ($help[0] -cne "Shadow Realm $version -- DISPOSABLE WINDOWS VM ONLY") {
         throw 'Executable version/help mismatch.'
     }

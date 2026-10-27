@@ -1,0 +1,62 @@
+//! Black-box CLI checks that never request a valid shadow-device operation.
+
+#![forbid(unsafe_code)]
+
+use std::process::{Command, Output};
+
+fn run(arguments: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_shadow-realm"))
+        .args(arguments)
+        .output()
+        .expect("built Shadow Realm executable must start")
+}
+
+#[test]
+fn help_names_the_utility_and_preserves_safety_flags() {
+    let output = run(&["--help"]);
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(help.starts_with(concat!(
+        "Shadow Realm ",
+        env!("CARGO_PKG_VERSION"),
+        " -- DISPOSABLE WINDOWS VM ONLY"
+    )));
+    for expected in [
+        "shadow-realm inspect",
+        "shadow-realm diagnose-lock",
+        "shadow-realm probe",
+        "shadow-realm restore-readonly",
+        "shadow-realm delete",
+        "--confirm-lab",
+        "--confirm-delete",
+        "--remount-snapshot",
+    ] {
+        assert!(help.contains(expected), "help must include {expected}");
+    }
+    assert_eq!(output.stderr, Vec::<u8>::new());
+}
+
+#[test]
+fn no_arguments_show_help_without_opening_a_device() {
+    let output = run(&[]);
+    assert!(output.status.success());
+    assert_eq!(output.stdout, run(&["--help"]).stdout);
+    assert_eq!(output.stderr, Vec::<u8>::new());
+}
+
+#[test]
+fn invalid_invocations_return_usage_errors_before_dispatch() {
+    for arguments in [
+        vec!["unknown-command"],
+        vec!["inspect", "--snapshot", "not-a-device"],
+        vec!["inspect", "--snapshot", "0"],
+        vec!["delete", "--snapshot", "0", "--file", "..\\outside"],
+        vec!["probe", "--restore-attributes-only"],
+    ] {
+        let output = run(&arguments);
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}");
+        assert_eq!(output.stdout, Vec::<u8>::new(), "{arguments:?}");
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(error.contains("Use --help for usage."), "{error}");
+    }
+}

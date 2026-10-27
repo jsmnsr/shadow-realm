@@ -34,7 +34,20 @@ secure-erasure utility. The executable is unsigned.
 Initial private repository import, Windows test/package scripts, pinned CI,
 allowlisted source/executable/demo ZIP, SHA-256 checksums, and source/compiler
 provenance. No third-party binaries, private lab logs, VM disks, or keys are
-distributed. No open-source license has been selected.
+distributed. Source and accompanying documentation are now available under
+the [MIT license](LICENSE), which is included in release archives.
+
+## Rust maintenance
+
+- Split CLI parsing, path checks, command dispatch, snapshot policy, and
+  Windows adapters into focused, crate-private modules.
+- Adopted Rust 2024 while retaining Rust 1.85 as the minimum compiler.
+- Enabled compiler and Clippy checks based on Microsoft's Pragmatic Rust
+  Guidelines, including documented unsafe blocks at Win32 boundaries.
+- Retained upstream error causes and optional backtraces, rejected embedded
+  NULs at the native file-opening boundary, and made snapshot numbers nonzero
+  by construction.
+- Preserved the CLI flags, exit codes, and remount-based safety policy.
 
 ## Evidence limits
 

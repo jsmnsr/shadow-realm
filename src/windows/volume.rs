@@ -1,11 +1,17 @@
-use super::{combine, Result, Volume};
+//! Buffered Win32 volume controls and reopen-based filesystem mounting.
+
+use super::handles::{
+    FILE_SHARE_READ, FILE_SHARE_WRITE, GENERIC_READ, open_file_handle, win32_error,
+};
+use crate::error::{Error, Result};
+use crate::paths::snapshot_path;
+use crate::snapshot::Volume;
 use std::ffi::c_void;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::windows::ffi::OsStrExt;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::fs;
+use std::io;
+use std::num::NonZeroU32;
+use std::os::windows::io::{AsRawHandle, OwnedHandle};
+use std::path::Path;
 
 // Windows SDK ntddvol.h: CTL_CODE('V', 13/14, METHOD_BUFFERED, FILE_ANY_ACCESS).
 const SET_GPT_ATTRIBUTES: u32 = 0x0056_0034;
@@ -16,17 +22,9 @@ const UNLOCK_VOLUME: u32 = 0x0009_001c;
 const DISMOUNT_VOLUME: u32 = 0x0009_0020;
 const ERROR_WRITE_PROTECT: i32 = 19;
 
+// All controls below are synchronous and buffered; no pointer survives the call.
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn CreateFileW(
-        name: *const u16,
-        access: u32,
-        share: u32,
-        security: *const c_void,
-        disposition: u32,
-        flags: u32,
-        template: *mut c_void,
-    ) -> *mut c_void;
     fn DeviceIoControl(
         device: *mut c_void,
         code: u32,
@@ -39,13 +37,10 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-pub struct SnapshotVolume {
+#[derive(Debug)]
+pub(crate) struct SnapshotVolume {
     path: String,
     handle: Option<OwnedHandle>,
-}
-
-fn win32_error(operation: &str, error: io::Error) -> String {
-    format!("{operation}: {error} (Win32 {:?})", error.raw_os_error())
 }
 
 fn encode_attributes(attributes: u64) -> [u8; 16] {
@@ -56,45 +51,25 @@ fn encode_attributes(attributes: u64) -> [u8; 16] {
     input
 }
 
-pub(crate) fn open_file_handle(
-    path: &Path,
-    access: u32,
-    share: u32,
-    flags: u32,
-) -> Result<OwnedHandle> {
-    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let handle = unsafe {
-        CreateFileW(
-            name.as_ptr(),
-            access,
-            share,
-            std::ptr::null(),
-            3,
-            flags,
-            std::ptr::null_mut(),
-        )
-    };
-    if handle == -1isize as *mut c_void {
-        return Err(win32_error(
-            &format!("Open {}", path.display()),
-            io::Error::last_os_error(),
-        ));
-    }
-    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
-}
-
 impl SnapshotVolume {
-    pub fn open(path: &str) -> Result<Self> {
+    pub(crate) fn open(snapshot: NonZeroU32) -> Result<Self> {
+        let path = snapshot_path(snapshot);
+        let handle = Self::open_handle(&path)?;
         Ok(Self {
-            path: path.to_string(),
-            handle: Some(Self::open_handle(path)?),
+            path,
+            handle: Some(handle),
         })
     }
 
     fn open_handle(path: &str) -> Result<OwnedHandle> {
         // These buffered controls use FILE_ANY_ACCESS; the driver separately
         // checks authorization. No raw-write access or privilege bypass is used.
-        open_file_handle(Path::new(path), 0x8000_0000, 3, 0)
+        open_file_handle(
+            Path::new(path),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            0,
+        )
     }
 
     fn control(&self, code: u32, input: &mut [u8], output: &mut [u8]) -> io::Result<u32> {
@@ -114,7 +89,9 @@ impl SnapshotVolume {
             output.as_mut_ptr().cast()
         };
         let mut returned = 0;
-        // Buffers remain valid for this synchronous, non-overlapped request.
+        // SAFETY: the owned handle stays live. Input/output slices are distinct,
+        // valid for their checked lengths, and borrowed until this synchronous
+        // call returns. Empty buffers and the OVERLAPPED argument are null.
         let success = unsafe {
             DeviceIoControl(
                 handle.as_raw_handle(),
@@ -123,7 +100,7 @@ impl SnapshotVolume {
                 input_size,
                 output_ptr,
                 output_size,
-                &mut returned,
+                &raw mut returned,
                 std::ptr::null_mut(),
             )
         };
@@ -141,10 +118,8 @@ impl Volume for SnapshotVolume {
         let returned = self
             .control(GET_GPT_ATTRIBUTES, &mut [], &mut output)
             .map_err(|error| win32_error("IOCTL_VOLUME_GET_GPT_ATTRIBUTES", error))?;
-        if returned != output.len() as u32 {
-            return Err(format!(
-                "Attribute query returned {returned} bytes; expected 8"
-            ));
+        if returned != 8 {
+            return Err(format!("Attribute query returned {returned} bytes; expected 8").into());
         }
         Ok(u64::from_le_bytes(output))
     }
@@ -204,79 +179,12 @@ impl Volume for SnapshotVolume {
         // that opening a direct volume handle alone mounted the filesystem.
         let root = format!("{}\\", self.path);
         let directory = fs::read_dir(&root).map_err(|error| {
-            format!("Access snapshot root to request filesystem mount: {error}")
+            Error::context("Access snapshot root to request filesystem mount", error)
         })?;
         drop(directory);
         println!("Snapshot root is accessible after reopen.");
         Ok(())
     }
-}
-
-struct Marker {
-    path: PathBuf,
-    owned: bool,
-}
-
-impl Marker {
-    fn cleanup(&mut self) -> Result<()> {
-        // Report the exact path if deletion fails; never delete an unowned file.
-        self.owned = false;
-        fs::remove_file(&self.path)
-            .map_err(|error| format!("Test file may remain at {}: {error}", self.path.display()))
-    }
-}
-
-impl Drop for Marker {
-    fn drop(&mut self) {
-        if self.owned {
-            if let Err(error) = self.cleanup() {
-                eprintln!("TEST-FILE CLEANUP FAILED: {error}");
-            }
-        }
-    }
-}
-
-fn marker_at(path: PathBuf) -> Result<()> {
-    // create_new prevents collisions from overwriting or deleting existing files.
-    let file = OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(&path)
-        .map_err(|error| format!("Create test file {}: {error}", path.display()))?;
-    let mut marker = Marker { path, owned: true };
-    // The file is captured by the closure, so it closes before marker cleanup,
-    // including during panic unwinding.
-    let operation = (move || {
-        let mut file = file;
-        let payload = b"shadow-realm: owned disposable-VM test file\r\n";
-        file.write_all(payload)
-            .map_err(|error| format!("Write test file: {error}"))?;
-        file.sync_all()
-            .map_err(|error| format!("Flush test file: {error}"))?;
-        file.seek(SeekFrom::Start(0))
-            .map_err(|error| format!("Seek test file: {error}"))?;
-        let mut observed = Vec::new();
-        file.take(payload.len() as u64 + 1)
-            .read_to_end(&mut observed)
-            .map_err(|error| format!("Read back test file: {error}"))?;
-        if observed != payload {
-            return Err("Test-file contents did not match".into());
-        }
-        Ok(())
-    })();
-    combine(operation, marker.cleanup(), "TEST-FILE CLEANUP FAILED")
-}
-
-pub fn marker_probe(root: &str) -> Result<()> {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("System clock: {error}"))?
-        .as_nanos();
-    let name = format!("shadow-realm-{}-{nonce}.tmp", std::process::id());
-    let path = Path::new(root).join(name);
-    println!("Owned test file: {}", path.display());
-    marker_at(path)
 }
 
 #[cfg(test)]
@@ -294,26 +202,5 @@ mod tests {
         assert_eq!(LOCK_VOLUME, (9 << 16) | (6 << 2));
         assert_eq!(UNLOCK_VOLUME, (9 << 16) | (7 << 2));
         assert_eq!(DISMOUNT_VOLUME, (9 << 16) | (8 << 2));
-    }
-
-    #[test]
-    fn marker_round_trip_and_collision_leave_existing_file_untouched() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "shadow-realm-unit-test-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir(&directory).unwrap();
-        let path = directory.join("marker.tmp");
-        marker_at(path.clone()).unwrap();
-        assert!(!path.exists());
-        fs::write(&path, b"existing file").unwrap();
-        assert!(marker_at(path.clone()).is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"existing file");
-        fs::remove_file(path).unwrap();
-        fs::remove_dir(directory).unwrap();
     }
 }

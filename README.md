@@ -46,7 +46,7 @@ cargo build --release --locked --offline --target x86_64-pc-windows-msvc
 
 Alternatively, use `shadow-realm.exe` from an extracted release. Release
 binaries are unsigned; compare the ZIP's SHA-256 hash with its accompanying
-`SHA256SUMS.txt`. No open-source license has been granted.
+`SHA256SUMS.txt`.
 
 ### Select and preview
 
@@ -102,7 +102,24 @@ Exit codes are `0` for success, `1` for operational failure, and `2` for invalid
 arguments. Reboot/detach persistence and general snapshot compatibility remain
 unestablished.
 
-Development: `scripts\Test.ps1` runs offline verification without live VSS
+## Development
+
+We follow the [Microsoft Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/).
+Small, crate-private modules separate CLI parsing, path validation, snapshot
+policy, and Windows adapters. Unsafe code is limited to documented Win32
+boundaries; policy and parsing forbid it.
+
+This short-lived, dependency-free CLI keeps the standard allocator and local
+console diagnostics rather than adding an allocator or telemetry framework.
+It remains one crate: its modules are internal implementation details, not
+independent libraries. These choices preserve offline builds and the demo's
+output contract.
+
+`scripts\Test.ps1` runs offline verification without live VSS
 operations. `scripts\Package.ps1` creates the release ZIP from a clean committed
 checkout using Rust 1.99.1. See [release notes](RELEASE-NOTES.md) for compatibility
 changes.
+
+## License
+
+[MIT](LICENSE). The license does not change the experimental safety limits above.

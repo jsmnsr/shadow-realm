@@ -1,17 +1,26 @@
-use super::{validate_relative_file, windows::open_file_handle, Result};
+//! Pins non-reparse paths and deletes one identity-checked file through its exclusive handle.
+
+use super::handles::{FILE_SHARE_READ, open_file_handle};
+use crate::error::{Error, Result};
+use crate::paths::validate_relative_file;
 use std::ffi::c_void;
 use std::fs;
 use std::io;
-use std::mem::size_of;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 
+// WinNT.h file access/attribute flags; OPEN_REPARSE_BACKUP combines
+// FILE_FLAG_OPEN_REPARSE_POINT and FILE_FLAG_BACKUP_SEMANTICS.
 const READ_ATTRIBUTES: u32 = 0x80;
 const READ_DATA_OR_LIST_DIRECTORY: u32 = 1;
 const DELETE_ACCESS: u32 = 0x0001_0000;
 const OPEN_REPARSE_BACKUP: u32 = 0x0220_0000;
 const DIRECTORY: u32 = 0x10;
 const REPARSE_POINT: u32 = 0x400;
+// FILE_INFO_BY_HANDLE_CLASS discriminants from WinBase.h.
+const FILE_ID_INFO: i32 = 18;
+const FILE_DISPOSITION_INFO: i32 = 4;
+const FILE_ID_INFO_SIZE: u32 = 24;
 
 #[repr(C)]
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,13 +52,14 @@ struct FileId {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Identity {
+pub(crate) struct Identity {
     id: FileId,
     created: FileTime,
     written: FileTime,
     size: u64,
 }
 
+// Only synchronous calls with the repr(C) layouts below and live owned handles.
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetFileInformationByHandle(handle: *mut c_void, information: *mut FileInformation) -> i32;
@@ -69,10 +79,12 @@ unsafe extern "system" {
 
 fn information(handle: &OwnedHandle) -> Result<FileInformation> {
     let mut info = FileInformation::default();
-    if unsafe { GetFileInformationByHandle(handle.as_raw_handle(), &mut info) } == 0 {
-        return Err(format!(
-            "GetFileInformationByHandle: {}",
-            io::Error::last_os_error()
+    // SAFETY: handle remains live and info is writable, properly aligned storage
+    // matching BY_HANDLE_FILE_INFORMATION for the duration of the call.
+    if unsafe { GetFileInformationByHandle(handle.as_raw_handle(), &raw mut info) } == 0 {
+        return Err(Error::context(
+            "GetFileInformationByHandle",
+            io::Error::last_os_error(),
         ));
     }
     Ok(info)
@@ -80,18 +92,20 @@ fn information(handle: &OwnedHandle) -> Result<FileInformation> {
 
 fn identity(handle: &OwnedHandle, info: &FileInformation) -> Result<Identity> {
     let mut id = FileId::default();
+    // SAFETY: FILE_ID_INFO selects the repr(C) FileId layout; id is aligned,
+    // writable, and lives through the synchronous call. The handle is borrowed.
     if unsafe {
         GetFileInformationByHandleEx(
             handle.as_raw_handle(),
-            18,
-            (&mut id as *mut FileId).cast(),
-            size_of::<FileId>() as u32,
+            FILE_ID_INFO,
+            std::ptr::from_mut(&mut id).cast(),
+            FILE_ID_INFO_SIZE,
         )
     } == 0
     {
-        return Err(format!(
-            "Query 128-bit file identity: {}",
-            io::Error::last_os_error()
+        return Err(Error::context(
+            "Query 128-bit file identity",
+            io::Error::last_os_error(),
         ));
     }
     Ok(Identity {
@@ -117,18 +131,15 @@ fn pin_directory(path: &Path) -> Result<OwnedHandle> {
     let handle = open_file_handle(
         path,
         READ_ATTRIBUTES | READ_DATA_OR_LIST_DIRECTORY,
-        1,
+        FILE_SHARE_READ,
         OPEN_REPARSE_BACKUP,
     )?;
     let info = information(&handle)?;
     if info.attributes & REPARSE_POINT != 0 {
-        return Err(format!(
-            "Refusing a reparse-point directory: {}",
-            path.display()
-        ));
+        return Err(format!("Refusing a reparse-point directory: {}", path.display()).into());
     }
     if info.attributes & DIRECTORY == 0 {
-        return Err(format!("Not a directory: {}", path.display()));
+        return Err(format!("Not a directory: {}", path.display()).into());
     }
     Ok(handle)
 }
@@ -151,7 +162,7 @@ fn open_checked(root: &str, relative: &str, deleting: bool) -> Result<CheckedFil
     let file = open_file_handle(&path, access, 0, OPEN_REPARSE_BACKUP)?;
     let info = information(&file)?;
     if info.attributes & REPARSE_POINT != 0 {
-        return Err(format!("Refusing a reparse-point file: {}", path.display()));
+        return Err(format!("Refusing a reparse-point file: {}", path.display()).into());
     }
     if info.attributes & DIRECTORY != 0 {
         return Err("Only one regular file can be deleted; directories are not accepted".into());
@@ -166,7 +177,7 @@ fn open_checked(root: &str, relative: &str, deleting: bool) -> Result<CheckedFil
     })
 }
 
-pub fn preview(root: &str, relative: &str) -> Result<Identity> {
+pub(crate) fn preview(root: &str, relative: &str) -> Result<Identity> {
     let checked = open_checked(root, relative, false)?;
     println!("Selected file: {}", checked.path.display());
     println!(
@@ -178,7 +189,7 @@ pub fn preview(root: &str, relative: &str) -> Result<Identity> {
     Ok(checked.identity)
 }
 
-pub fn delete_file(root: &str, relative: &str, expected: &Identity) -> Result<()> {
+pub(crate) fn delete_file(root: &str, relative: &str, expected: &Identity) -> Result<()> {
     let checked = open_checked(root, relative, true)?;
     if &checked.identity != expected {
         return Err(
@@ -193,13 +204,20 @@ pub fn delete_file(root: &str, relative: &str, expected: &Identity) -> Result<()
     } = checked;
     // FILE_DISPOSITION_INFO contains one BOOLEAN (one byte), not a Win32 BOOL.
     let mut delete: u8 = 1;
+    // SAFETY: file is a live handle opened with DELETE access. The selected class
+    // reads one BOOLEAN from delete, which remains valid until the call returns.
     if unsafe {
-        SetFileInformationByHandle(file.as_raw_handle(), 4, (&mut delete as *mut u8).cast(), 1)
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FILE_DISPOSITION_INFO,
+            std::ptr::from_mut(&mut delete).cast(),
+            1,
+        )
     } == 0
     {
-        return Err(format!(
-            "Delete selected file by handle: {}",
-            io::Error::last_os_error()
+        return Err(Error::context(
+            "Delete selected file by handle",
+            io::Error::last_os_error(),
         ));
     }
     drop(file);
@@ -215,8 +233,9 @@ pub fn delete_file(root: &str, relative: &str, expected: &Identity) -> Result<()
             "Deletion was requested but the selected name is still present; state is uncertain"
                 .into(),
         ),
-        Err(error) => Err(format!(
-            "Deletion requested, but absence could not be verified: {error}"
+        Err(error) => Err(Error::context(
+            "Deletion requested, but absence could not be verified",
+            error,
         )),
     };
     drop(parents);
@@ -245,7 +264,7 @@ mod tests {
     #[test]
     fn windows_metadata_layout_matches_sdk() {
         assert_eq!(size_of::<FileInformation>(), 52);
-        assert_eq!(size_of::<FileId>(), 24);
+        assert_eq!(size_of::<FileId>(), FILE_ID_INFO_SIZE as usize);
     }
 
     #[test]
@@ -346,12 +365,18 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(preview(root.to_str().unwrap(), r"junction\sentinel")
-            .unwrap_err()
-            .contains("reparse"));
-        assert!(preview(root.to_str().unwrap(), "junction")
-            .unwrap_err()
-            .contains("reparse"));
+        assert!(
+            preview(root.to_str().unwrap(), r"junction\sentinel")
+                .unwrap_err()
+                .to_string()
+                .contains("reparse")
+        );
+        assert!(
+            preview(root.to_str().unwrap(), "junction")
+                .unwrap_err()
+                .to_string()
+                .contains("reparse")
+        );
         let outside_id = preview(outside.to_str().unwrap(), "sentinel").unwrap();
         assert!(delete_file(root.to_str().unwrap(), r"junction\sentinel", &outside_id).is_err());
         assert_eq!(fs::read(&sentinel).unwrap(), b"outside");
