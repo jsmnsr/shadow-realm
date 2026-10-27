@@ -1,84 +1,38 @@
 //! Pins non-reparse paths and deletes one identity-checked file through its exclusive handle.
 
-use super::handles::{FILE_SHARE_READ, open_file_handle};
+use super::handles::open_file_handle;
 use crate::error::{Error, Result};
 use crate::paths::validate_relative_file;
-use std::ffi::c_void;
 use std::fs;
 use std::io;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
+use windows_sys::Win32::Foundation::FILETIME;
+use windows_sys::Win32::Storage::FileSystem::{
+    BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_READ,
+    FileDispositionInfo, FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+    SetFileInformationByHandle,
+};
 
-// WinNT.h file access/attribute flags; OPEN_REPARSE_BACKUP combines
-// FILE_FLAG_OPEN_REPARSE_POINT and FILE_FLAG_BACKUP_SEMANTICS.
-const READ_ATTRIBUTES: u32 = 0x80;
-const READ_DATA_OR_LIST_DIRECTORY: u32 = 1;
-const DELETE_ACCESS: u32 = 0x0001_0000;
-const OPEN_REPARSE_BACKUP: u32 = 0x0220_0000;
-const DIRECTORY: u32 = 0x10;
-const REPARSE_POINT: u32 = 0x400;
-// FILE_INFO_BY_HANDLE_CLASS discriminants from WinBase.h.
-const FILE_ID_INFO: i32 = 18;
-const FILE_DISPOSITION_INFO: i32 = 4;
-const FILE_ID_INFO_SIZE: u32 = 24;
-
-#[repr(C)]
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
-struct FileTime {
-    low: u32,
-    high: u32,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct FileInformation {
-    attributes: u32,
-    created: FileTime,
-    accessed: FileTime,
-    written: FileTime,
-    volume_serial: u32,
-    size_high: u32,
-    size_low: u32,
-    links: u32,
-    index_high: u32,
-    index_low: u32,
-}
-
-#[repr(C)]
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
-struct FileId {
-    volume_serial: u64,
-    id: [u8; 16],
-}
+const OPEN_REPARSE_BACKUP: u32 = FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Identity {
-    id: FileId,
-    created: FileTime,
-    written: FileTime,
+    volume_serial: u64,
+    id: [u8; 16],
+    created: u64,
+    written: u64,
     size: u64,
 }
 
-// Only synchronous calls with the repr(C) layouts below and live owned handles.
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn GetFileInformationByHandle(handle: *mut c_void, information: *mut FileInformation) -> i32;
-    fn GetFileInformationByHandleEx(
-        handle: *mut c_void,
-        class: i32,
-        information: *mut c_void,
-        size: u32,
-    ) -> i32;
-    fn SetFileInformationByHandle(
-        handle: *mut c_void,
-        class: i32,
-        information: *mut c_void,
-        size: u32,
-    ) -> i32;
+fn filetime_ticks(time: FILETIME) -> u64 {
+    (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
 }
 
-fn information(handle: &OwnedHandle) -> Result<FileInformation> {
-    let mut info = FileInformation::default();
+fn information(handle: &OwnedHandle) -> Result<BY_HANDLE_FILE_INFORMATION> {
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: handle remains live and info is writable, properly aligned storage
     // matching BY_HANDLE_FILE_INFORMATION for the duration of the call.
     if unsafe { GetFileInformationByHandle(handle.as_raw_handle(), &raw mut info) } == 0 {
@@ -90,16 +44,18 @@ fn information(handle: &OwnedHandle) -> Result<FileInformation> {
     Ok(info)
 }
 
-fn identity(handle: &OwnedHandle, info: &FileInformation) -> Result<Identity> {
-    let mut id = FileId::default();
-    // SAFETY: FILE_ID_INFO selects the repr(C) FileId layout; id is aligned,
+fn identity(handle: &OwnedHandle, info: &BY_HANDLE_FILE_INFORMATION) -> Result<Identity> {
+    let mut id = FILE_ID_INFO::default();
+    let size = u32::try_from(size_of_val(&id))
+        .map_err(|error| Error::context("File identity buffer size", error))?;
+    // SAFETY: FileIdInfo selects the SDK FILE_ID_INFO layout; id is aligned,
     // writable, and lives through the synchronous call. The handle is borrowed.
     if unsafe {
         GetFileInformationByHandleEx(
             handle.as_raw_handle(),
-            FILE_ID_INFO,
+            FileIdInfo,
             std::ptr::from_mut(&mut id).cast(),
-            FILE_ID_INFO_SIZE,
+            size,
         )
     } == 0
     {
@@ -109,10 +65,11 @@ fn identity(handle: &OwnedHandle, info: &FileInformation) -> Result<Identity> {
         ));
     }
     Ok(Identity {
-        id,
-        created: info.created,
-        written: info.written,
-        size: (u64::from(info.size_high) << 32) | u64::from(info.size_low),
+        volume_serial: id.VolumeSerialNumber,
+        id: id.FileId.Identifier,
+        created: filetime_ticks(info.ftCreationTime),
+        written: filetime_ticks(info.ftLastWriteTime),
+        size: (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow),
     })
 }
 
@@ -130,15 +87,15 @@ fn pin_directory(path: &Path) -> Result<OwnedHandle> {
     // Attribute-only handles do not participate in read/write sharing checks.
     let handle = open_file_handle(
         path,
-        READ_ATTRIBUTES | READ_DATA_OR_LIST_DIRECTORY,
+        FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY,
         FILE_SHARE_READ,
         OPEN_REPARSE_BACKUP,
     )?;
     let info = information(&handle)?;
-    if info.attributes & REPARSE_POINT != 0 {
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(format!("Refusing a reparse-point directory: {}", path.display()).into());
     }
-    if info.attributes & DIRECTORY == 0 {
+    if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
         return Err(format!("Not a directory: {}", path.display()).into());
     }
     Ok(handle)
@@ -155,16 +112,15 @@ fn open_checked(root: &str, relative: &str, deleting: bool) -> Result<CheckedFil
             parents.push(pin_directory(&path)?);
         }
     }
-    let access =
-        READ_ATTRIBUTES | READ_DATA_OR_LIST_DIRECTORY | if deleting { DELETE_ACCESS } else { 0 };
+    let access = FILE_READ_ATTRIBUTES | FILE_READ_DATA | if deleting { DELETE } else { 0 };
     // Exclusive access avoids deleting an actively opened file or leaving a
     // delete-pending name held by another user handle.
     let file = open_file_handle(&path, access, 0, OPEN_REPARSE_BACKUP)?;
     let info = information(&file)?;
-    if info.attributes & REPARSE_POINT != 0 {
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(format!("Refusing a reparse-point file: {}", path.display()).into());
     }
-    if info.attributes & DIRECTORY != 0 {
+    if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
         return Err("Only one regular file can be deleted; directories are not accepted".into());
     }
     let identity = identity(&file, &info)?;
@@ -173,7 +129,7 @@ fn open_checked(root: &str, relative: &str, deleting: bool) -> Result<CheckedFil
         parents,
         path,
         identity,
-        links: info.links,
+        links: info.nNumberOfLinks,
     })
 }
 
@@ -184,7 +140,7 @@ pub(crate) fn preview(root: &str, relative: &str) -> Result<Identity> {
         "Size: {} bytes; hard links: {}",
         checked.identity.size, checked.links
     );
-    println!("File ID: {:02x?}", checked.identity.id.id);
+    println!("File ID: {:02x?}", checked.identity.id);
     // All preview handles close before the volume-lock/remount operation.
     Ok(checked.identity)
 }
@@ -202,16 +158,17 @@ pub(crate) fn delete_file(root: &str, relative: &str, expected: &Identity) -> Re
         path,
         ..
     } = checked;
-    // FILE_DISPOSITION_INFO contains one BOOLEAN (one byte), not a Win32 BOOL.
-    let mut delete: u8 = 1;
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    let size = u32::try_from(size_of_val(&disposition))
+        .map_err(|error| Error::context("File disposition buffer size", error))?;
     // SAFETY: file is a live handle opened with DELETE access. The selected class
-    // reads one BOOLEAN from delete, which remains valid until the call returns.
+    // reads the SDK disposition structure, which stays live until the call returns.
     if unsafe {
         SetFileInformationByHandle(
             file.as_raw_handle(),
-            FILE_DISPOSITION_INFO,
-            std::ptr::from_mut(&mut delete).cast(),
-            1,
+            FileDispositionInfo,
+            std::ptr::from_ref(&disposition).cast(),
+            size,
         )
     } == 0
     {
@@ -247,6 +204,8 @@ mod tests {
     use super::*;
     use std::os::windows::fs::OpenOptionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use windows_sys::Win32::Foundation::GENERIC_WRITE;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_WRITE};
 
     fn area() -> PathBuf {
         let nonce = SystemTime::now()
@@ -262,9 +221,12 @@ mod tests {
     }
 
     #[test]
-    fn windows_metadata_layout_matches_sdk() {
-        assert_eq!(size_of::<FileInformation>(), 52);
-        assert_eq!(size_of::<FileId>(), FILE_ID_INFO_SIZE as usize);
+    fn native_timestamps_preserve_both_halves() {
+        let time = FILETIME {
+            dwLowDateTime: 0x0123_4567,
+            dwHighDateTime: 0x89ab_cdef,
+        };
+        assert_eq!(filetime_ticks(time), 0x89ab_cdef_0123_4567);
     }
 
     #[test]
@@ -338,10 +300,24 @@ mod tests {
         let checked = open_checked(root.to_str().unwrap(), r"parent\file", false).unwrap();
         assert!(fs::rename(root.join("parent"), root.join("moved")).is_err());
         assert!(
-            open_file_handle(&root.join("parent"), 0x4000_0000, 7, OPEN_REPARSE_BACKUP).is_err()
+            open_file_handle(
+                &root.join("parent"),
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                OPEN_REPARSE_BACKUP
+            )
+            .is_err()
         );
         drop(checked);
-        drop(open_file_handle(&root.join("parent"), 0x4000_0000, 7, OPEN_REPARSE_BACKUP).unwrap());
+        drop(
+            open_file_handle(
+                &root.join("parent"),
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                OPEN_REPARSE_BACKUP,
+            )
+            .unwrap(),
+        );
         fs::remove_file(root.join("parent").join("file")).unwrap();
         fs::remove_dir(root.join("parent")).unwrap();
         fs::remove_dir(root).unwrap();

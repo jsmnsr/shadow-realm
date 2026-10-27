@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [ValidateSet('x86_64-pc-windows-gnu', 'x86_64-pc-windows-msvc')]
-    [string]$Target = 'x86_64-pc-windows-msvc'
+    [string]$Target = 'x86_64-pc-windows-msvc',
+    [switch]$Offline
 )
 
 Set-StrictMode -Version Latest
@@ -27,6 +28,10 @@ try {
     }
     & cargo fmt --check
     if ($LASTEXITCODE -ne 0) { throw 'Formatting check failed.' }
+    $fetch = @('fetch', '--locked', '--target', $Target)
+    if ($Offline) { $fetch += '--offline' }
+    & cargo @fetch
+    if ($LASTEXITCODE -ne 0) { throw 'Dependency fetch failed; offline verification requires a populated Cargo cache.' }
     & cargo clippy --locked --offline --target $Target --all-targets -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw 'Clippy failed; install the matching toolchain component if missing.' }
     & cargo test --locked --offline --target $Target

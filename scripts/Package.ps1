@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [ValidateSet('x86_64-pc-windows-gnu', 'x86_64-pc-windows-msvc')]
-    [string]$Target = 'x86_64-pc-windows-msvc'
+    [string]$Target = 'x86_64-pc-windows-msvc',
+    [switch]$Offline
 )
 
 Set-StrictMode -Version Latest
@@ -27,9 +28,25 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Cannot identify Cargo version.' }
     $sysroot = & rustc --print sysroot
     if ($LASTEXITCODE -ne 0) { throw 'Cannot identify compiler sysroot.' }
-    $metadata = & cargo metadata --locked --offline --no-deps --format-version 1
+    $fetch = @('fetch', '--locked', '--target', $Target)
+    if ($Offline) { $fetch += '--offline' }
+    & cargo @fetch
+    if ($LASTEXITCODE -ne 0) { throw 'Dependency fetch failed; offline packaging requires a populated Cargo cache.' }
+    $metadataJson = & cargo metadata --locked --offline --format-version 1 --filter-platform $Target
     if ($LASTEXITCODE -ne 0) { throw 'Cannot read Cargo metadata.' }
-    $version = ($metadata | ConvertFrom-Json).packages[0].version
+    $metadata = $metadataJson | ConvertFrom-Json
+    $package = $metadata.packages | Where-Object id -eq $metadata.resolve.root
+    $version = $package.version
+    $resolved = @($metadata.resolve.nodes | ForEach-Object id)
+    $dependencies = @($metadata.packages |
+        Where-Object { $_.id -ne $metadata.resolve.root -and $_.id -in $resolved } |
+        Sort-Object name | Select-Object name, version, license)
+    $notices = Get-Content -LiteralPath (Join-Path $root 'THIRD-PARTY-NOTICES.md') -Raw
+    foreach ($dependency in $dependencies) {
+        if (!$notices.Contains("| $($dependency.name) | $($dependency.version) |")) {
+            throw "Third-party notices must cover $($dependency.name) $($dependency.version)."
+        }
+    }
     if ($version -notmatch '^\d+\.\d+\.\d+-experimental\.\d+$') {
         throw 'Only explicitly experimental versions may be packaged.'
     }
@@ -41,7 +58,7 @@ try {
         "--remap-path-prefix=$root=source",
         '-Dwarnings'
     ) -join [char]31
-    & (Join-Path $PSScriptRoot 'Test.ps1') -Target $Target
+    & (Join-Path $PSScriptRoot 'Test.ps1') -Target $Target -Offline
     $executable = Join-Path $root "target\$Target\release\shadow-realm.exe"
     $binary = [IO.File]::ReadAllBytes($executable)
     $pe = [BitConverter]::ToInt32($binary, 0x3c)
@@ -61,7 +78,7 @@ try {
         }
     }
     $files = @(
-        'Cargo.toml', 'Cargo.lock', 'LICENSE', 'README.md', 'RELEASE-NOTES.md',
+        'Cargo.toml', 'Cargo.lock', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'README.md', 'RELEASE-NOTES.md',
         'demo\README.md', 'demo\RESEARCH.md', 'demo\Invoke-ShadowRealmDemo.ps1',
         'src\main.rs', 'src\app.rs', 'src\cli.rs', 'src\error.rs',
         'src\paths.rs', 'src\snapshot.rs', 'src\snapshot\tests.rs', 'src\windows\mod.rs',
@@ -83,6 +100,7 @@ try {
     $provenance = [ordered]@{
         version = $version
         license = 'MIT'
+        dependencies = $dependencies
         source_commit = $commit
         source_committed_at = $commitTime
         target = $Target
@@ -93,7 +111,7 @@ try {
         validation = 'Windows unit and CLI tests, Clippy, rustfmt, PowerShell syntax and consent gate; no live VSS test'
         experimental = $true
         authenticode_signed = $false
-    } | ConvertTo-Json
+    } | ConvertTo-Json -Depth 4
     $utf8 = New-Object Text.UTF8Encoding($false)
     $entries['provenance.json'] = $utf8.GetBytes($provenance + "`n")
     $sha = [Security.Cryptography.SHA256]::Create()

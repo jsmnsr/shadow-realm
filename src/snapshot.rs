@@ -7,11 +7,13 @@
 
 use crate::error::{Error, Result, combine};
 
-// GPT_BASIC_DATA_ATTRIBUTE_* bits from the Windows SDK's WinIOCtl.h.
-const NO_DRIVE_LETTER: u64 = 0x8000_0000_0000_0000;
-const HIDDEN: u64 = 0x4000_0000_0000_0000;
-pub(crate) const SHADOW_COPY: u64 = 0x2000_0000_0000_0000;
-pub(crate) const READ_ONLY: u64 = 0x1000_0000_0000_0000;
+use windows_sys::Win32::System::Ioctl::{
+    GPT_BASIC_DATA_ATTRIBUTE_HIDDEN as HIDDEN,
+    GPT_BASIC_DATA_ATTRIBUTE_NO_DRIVE_LETTER as NO_DRIVE_LETTER,
+    GPT_BASIC_DATA_ATTRIBUTE_READ_ONLY as READ_ONLY,
+    GPT_BASIC_DATA_ATTRIBUTE_SHADOW_COPY as SHADOW_COPY,
+};
+
 const KNOWN_ATTRIBUTES: u64 = NO_DRIVE_LETTER | HIDDEN | SHADOW_COPY | READ_ONLY;
 
 pub(crate) trait Volume {

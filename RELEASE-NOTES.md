@@ -49,6 +49,17 @@ the [MIT license](LICENSE), which is included in release archives.
   by construction.
 - Preserved the CLI flags, exit codes, and remount-based safety policy.
 
+## Official Windows bindings
+
+- Replaced handwritten Win32 function declarations, SDK structures, numeric
+  constants, and GPT control-buffer encoding with Microsoft's `windows-sys`.
+- Kept owned-handle wrappers, file identity comparison, and snapshot policy
+  in our modules; no additional abstraction layer or COM dependency is needed.
+- Builds now fetch the dependencies pinned in `Cargo.lock`. Verification and
+  packaging support `-Offline` for pre-populated caches.
+- Release archives include dependency license notices, and provenance records
+  the resolved dependency versions.
+
 ## Evidence limits
 
 Previous Windows 11/Volsnap experiments rejected an ordinary OS shadow's

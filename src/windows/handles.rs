@@ -1,32 +1,14 @@
 //! Synchronous Win32 file opening with uniquely owned, automatically closed handles.
 
 use crate::error::{Error, Result};
-use std::ffi::c_void;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
 use std::path::Path;
-
-// WinBase.h: open only existing objects, never create or truncate them.
-const OPEN_EXISTING: u32 = 3;
-const INVALID_HANDLE_VALUE: *mut c_void = -1_isize as *mut c_void;
-pub(super) const GENERIC_READ: u32 = 0x8000_0000;
-pub(super) const FILE_SHARE_READ: u32 = 1;
-pub(super) const FILE_SHARE_WRITE: u32 = 2;
-
-// Synchronous calls only: names must be NUL-terminated and remain alive until return.
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn CreateFileW(
-        name: *const u16,
-        access: u32,
-        share: u32,
-        security: *const c_void,
-        disposition: u32,
-        flags: u32,
-        template: *mut c_void,
-    ) -> *mut c_void;
-}
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_ACCESS_RIGHTS, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE, OPEN_EXISTING,
+};
 
 pub(super) fn win32_error(operation: &str, error: io::Error) -> Error {
     Error::context(
@@ -37,9 +19,9 @@ pub(super) fn win32_error(operation: &str, error: io::Error) -> Error {
 
 pub(super) fn open_file_handle(
     path: &Path,
-    access: u32,
-    share: u32,
-    flags: u32,
+    access: FILE_ACCESS_RIGHTS,
+    share: FILE_SHARE_MODE,
+    flags: FILE_FLAGS_AND_ATTRIBUTES,
 ) -> Result<OwnedHandle> {
     let mut name: Vec<u16> = path.as_os_str().encode_wide().collect();
     if name.contains(&0) {
@@ -73,6 +55,7 @@ pub(super) fn open_file_handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::Foundation::GENERIC_READ;
 
     #[test]
     fn embedded_nul_is_rejected_before_windows_can_truncate_the_path() {

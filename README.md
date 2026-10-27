@@ -18,8 +18,9 @@ volume. Shadow Realm works with an existing shadow copy to:
 - Attempt to delete exactly one selected file name, then restore the original
   read-only attributes.
 
-The utility is written in Rust with no external crate dependencies. It does
-not create disks or snapshots; the optional [demo](demo/README.md) does that.
+The utility is written in Rust and uses Microsoft's `windows-sys` bindings for
+Windows APIs. It does not create disks or snapshots; the optional
+[demo](demo/README.md) does that.
 
 ## Why
 
@@ -40,7 +41,7 @@ Install Rust 1.85+ and the Visual Studio Windows x64 C++ build tools, then run
 from the repository root:
 
 ```powershell
-cargo build --release --locked --offline --target x86_64-pc-windows-msvc
+cargo build --release --locked --target x86_64-pc-windows-msvc
 .\target\x86_64-pc-windows-msvc\release\shadow-realm.exe --help
 ```
 
@@ -109,17 +110,20 @@ Small, crate-private modules separate CLI parsing, path validation, snapshot
 policy, and Windows adapters. Unsafe code is limited to documented Win32
 boundaries; policy and parsing forbid it.
 
-This short-lived, dependency-free CLI keeps the standard allocator and local
-console diagnostics rather than adding an allocator or telemetry framework.
-It remains one crate: its modules are internal implementation details, not
-independent libraries. These choices preserve offline builds and the demo's
-output contract.
+Prefer established, actively maintained crates over reimplementing platform
+APIs or general-purpose infrastructure. Evaluate maintenance, licensing, and
+compiler compatibility; enable only needed features and commit `Cargo.lock`.
+Microsoft's `windows-sys` supplies the Win32 bindings, while our code handles
+ownership, validation, and snapshot policy.
 
-`scripts\Test.ps1` runs offline verification without live VSS
-operations. `scripts\Package.ps1` creates the release ZIP from a clean committed
-checkout using Rust 1.99.1. See [release notes](RELEASE-NOTES.md) for compatibility
-changes.
+`scripts\Test.ps1` fetches locked dependencies, then verifies the utility without
+live VSS operations. `scripts\Package.ps1` creates the release ZIP from a clean
+committed checkout using Rust 1.99.1. Both accept `-Offline` when the dependencies
+are already cached. For a manual offline build, first run
+`cargo fetch --locked --target x86_64-pc-windows-msvc`, then add `--offline` to
+the build command. See [release notes](RELEASE-NOTES.md) for compatibility changes.
 
 ## License
 
 [MIT](LICENSE). The license does not change the experimental safety limits above.
+Dependency licenses are included in [third-party notices](THIRD-PARTY-NOTICES.md).

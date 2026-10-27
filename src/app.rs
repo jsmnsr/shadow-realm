@@ -9,10 +9,14 @@ use crate::{
     cli::Command,
     paths::snapshot_path,
     snapshot::{
-        READ_ONLY, SHADOW_COPY, Volume, check_snapshot_attributes, diagnose_lock, restore_readonly,
-        with_writable_snapshot,
+        Volume, check_snapshot_attributes, diagnose_lock, restore_readonly, with_writable_snapshot,
     },
     windows::{self, deletion},
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::Ioctl::{
+    GPT_BASIC_DATA_ATTRIBUTE_READ_ONLY as READ_ONLY,
+    GPT_BASIC_DATA_ATTRIBUTE_SHADOW_COPY as SHADOW_COPY,
 };
 
 #[cfg(windows)]

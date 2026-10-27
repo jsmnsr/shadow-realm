@@ -39,7 +39,7 @@ not the current working directory. Use `-ToolPath` to override it.
 Build at the repository root, then invoke the demo with the built executable:
 
 ```powershell
-cargo build --release --locked --offline --target x86_64-pc-windows-msvc
+cargo build --release --locked --target x86_64-pc-windows-msvc
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\demo\Invoke-ShadowRealmDemo.ps1 -ConfirmLab -ToolPath .\target\x86_64-pc-windows-msvc\release\shadow-realm.exe
 ```
 
