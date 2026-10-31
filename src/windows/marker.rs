@@ -2,10 +2,10 @@
 
 #![forbid(unsafe_code)]
 
+use super::files::write_contents;
 use crate::error::combine;
 use anyhow::{Context, Result};
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,23 +42,16 @@ fn marker_at(path: PathBuf) -> Result<()> {
         .open(&path)
         .with_context(|| format!("Create test file {}", path.display()))?;
     let mut marker = Marker { path, owned: true };
-    // The file is captured by the closure, so it closes before marker cleanup,
+    // Move the file into an inner scope so it closes before marker cleanup,
     // including during panic unwinding.
-    let operation = (move || {
+    let operation = {
         let mut file = file;
-        let payload = b"shadow-realm: owned disposable-VM test file\r\n";
-        file.write_all(payload).context("Write test file")?;
-        file.sync_all().context("Flush test file")?;
-        file.seek(SeekFrom::Start(0)).context("Seek test file")?;
-        let mut observed = Vec::new();
-        file.take(payload.len() as u64 + 1)
-            .read_to_end(&mut observed)
-            .context("Read back test file")?;
-        if observed != payload {
-            anyhow::bail!("Test-file contents did not match");
-        }
-        Ok(())
-    })();
+        write_contents(
+            &mut file,
+            b"shadow-realm: owned disposable-VM test file\r\n",
+        )
+        .context("Write and verify test file")
+    };
     combine(operation, marker.cleanup(), "TEST-FILE CLEANUP FAILED")
 }
 

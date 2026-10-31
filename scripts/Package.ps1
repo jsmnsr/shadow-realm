@@ -83,10 +83,10 @@ try {
         'src\main.rs', 'src\app.rs', 'src\cli.rs', 'src\error.rs',
         'src\paths.rs', 'src\snapshot.rs', 'src\windows\mod.rs',
         'src\windows\handles.rs', 'src\windows\volume.rs',
-        'src\windows\deletion.rs', 'src\windows\marker.rs',
+        'src\windows\files.rs', 'src\windows\marker.rs',
         'tests\cli.rs',
-        'tests\unit\cli.rs', 'tests\unit\error.rs', 'tests\unit\paths.rs', 'tests\unit\snapshot.rs',
-        'tests\unit\windows\deletion.rs', 'tests\unit\windows\handles.rs',
+        'tests\unit\app.rs', 'tests\unit\cli.rs', 'tests\unit\error.rs', 'tests\unit\paths.rs', 'tests\unit\snapshot.rs',
+        'tests\unit\windows\files.rs', 'tests\unit\windows\handles.rs',
         'tests\unit\windows\marker.rs', 'tests\unit\windows\volume.rs',
         'scripts\Test.ps1', 'scripts\Package.ps1'
     )

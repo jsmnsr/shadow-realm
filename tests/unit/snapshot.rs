@@ -1,14 +1,6 @@
 use super::*;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-fn probe<V: Volume>(
-    volume: &mut V,
-    remount: bool,
-    action: impl FnOnce() -> Result<()>,
-) -> Result<()> {
-    with_writable_snapshot(volume, remount, action)
-}
-
 #[test]
 fn lock_diagnosis_only_locks_unlocks_and_previews() {
     let mut volume = MockVolume::default();
@@ -246,14 +238,14 @@ impl Volume for MockVolume {
 }
 
 #[test]
-fn successful_probe_restores_exact_original_attributes() {
+fn successful_operation_restores_exact_original_attributes() {
     for original in [KNOWN_ATTRIBUTES, KNOWN_ATTRIBUTES & !HIDDEN] {
         let mut volume = MockVolume {
             attributes: original,
             ..Default::default()
         };
         let mut ran = false;
-        probe(&mut volume, true, || {
+        with_writable_snapshot(&mut volume, || {
             ran = true;
             Ok(())
         })
@@ -268,12 +260,10 @@ fn successful_probe_restores_exact_original_attributes() {
 fn failed_file_operation_still_restores() {
     let mut volume = MockVolume::default();
     assert!(
-        probe(&mut volume, true, || Err(anyhow::anyhow!(
-            "file creation denied"
-        )))
-        .unwrap_err()
-        .chain()
-        .any(|cause| cause.to_string().contains("file creation denied"))
+        with_writable_snapshot(&mut volume, || Err(anyhow::anyhow!("file creation denied")))
+            .unwrap_err()
+            .chain()
+            .any(|cause| cause.to_string().contains("file creation denied"))
     );
     assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
     assert_eq!(volume.sets.len(), 2);
@@ -285,7 +275,7 @@ fn failed_enable_attempt_still_restores_without_running_action() {
         fail_enable: true,
         ..Default::default()
     };
-    let error = probe(&mut volume, true, || panic!("must not run")).unwrap_err();
+    let error = with_writable_snapshot(&mut volume, || panic!("must not run")).unwrap_err();
     assert!(format!("{error:#}").contains("partial enable failure"));
     assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
     assert_eq!(volume.sets.len(), 2);
@@ -297,7 +287,8 @@ fn preserves_both_operation_and_restoration_errors() {
         fail_restore: true,
         ..Default::default()
     };
-    let error = probe(&mut volume, true, || Err(anyhow::anyhow!("file failure"))).unwrap_err();
+    let error =
+        with_writable_snapshot(&mut volume, || Err(anyhow::anyhow!("file failure"))).unwrap_err();
     assert!(format!("{error:#}").contains("file failure"));
     assert!(format!("{error:#}").contains("RESTORATION FAILED"));
 }
@@ -309,7 +300,7 @@ fn restoration_failure_prevents_success() {
         ..Default::default()
     };
     assert!(
-        probe(&mut volume, true, || Ok(()))
+        with_writable_snapshot(&mut volume, || Ok(()))
             .unwrap_err()
             .chain()
             .any(|cause| cause.to_string().contains("RESTORATION FAILED"))
@@ -323,7 +314,7 @@ fn rejects_unobserved_attribute_transition() {
         ..Default::default()
     };
     assert!(
-        probe(&mut volume, true, || panic!("must not run"))
+        with_writable_snapshot(&mut volume, || panic!("must not run"))
             .unwrap_err()
             .chain()
             .any(|cause| cause.to_string().contains("transition not observed"))
@@ -338,7 +329,7 @@ fn refuses_write_probe_when_driver_still_reports_write_protection() {
         ..Default::default()
     };
     assert!(
-        probe(&mut volume, true, || panic!("must not run"))
+        with_writable_snapshot(&mut volume, || panic!("must not run"))
             .unwrap_err()
             .chain()
             .any(|cause| cause.to_string().contains("still reports write protection"))
@@ -358,7 +349,7 @@ fn refuses_already_writable_or_unexpected_attributes() {
             attributes,
             ..Default::default()
         };
-        assert!(probe(&mut volume, true, || panic!("must not run")).is_err());
+        assert!(with_writable_snapshot(&mut volume, || panic!("must not run")).is_err());
         assert_eq!(volume.sets, Vec::<u64>::new());
     }
 }
@@ -369,7 +360,7 @@ fn refuses_inconsistent_initial_writable_status() {
         writable_override: Some(true),
         ..Default::default()
     };
-    assert!(probe(&mut volume, true, || panic!("must not run")).is_err());
+    assert!(with_writable_snapshot(&mut volume, || panic!("must not run")).is_err());
     assert_eq!(volume.sets, Vec::<u64>::new());
 }
 
@@ -377,7 +368,7 @@ fn refuses_inconsistent_initial_writable_status() {
 fn unwinding_restores_attributes() {
     let mut volume = MockVolume::default();
     let result = catch_unwind(AssertUnwindSafe(|| {
-        let _ = probe(&mut volume, true, || panic!("simulated panic"));
+        let _ = with_writable_snapshot(&mut volume, || panic!("simulated panic"));
     }));
     assert!(result.is_err());
     assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
@@ -385,19 +376,9 @@ fn unwinding_restores_attributes() {
 }
 
 #[test]
-fn recovery_preserves_other_attributes() {
-    let mut volume = MockVolume {
-        attributes: KNOWN_ATTRIBUTES & !READ_ONLY,
-        ..Default::default()
-    };
-    restore_readonly(&mut volume, true).unwrap();
-    assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
-}
-
-#[test]
 fn remount_probe_runs_both_transitions_in_order() {
     let mut volume = MockVolume::default();
-    probe(&mut volume, true, || Ok(())).unwrap();
+    with_writable_snapshot(&mut volume, || Ok(())).unwrap();
     assert_eq!(
         volume.events,
         [
@@ -415,7 +396,7 @@ fn lock_failure_never_forces_a_dismount_or_attribute_change() {
         failures: vec![("lock", 1)],
         ..Default::default()
     };
-    assert!(change_attributes(&mut volume, KNOWN_ATTRIBUTES & !READ_ONLY, true).is_err());
+    assert!(change_attributes(&mut volume, KNOWN_ATTRIBUTES & !READ_ONLY).is_err());
     assert_eq!(volume.events, ["lock"]);
     assert_eq!(volume.sets, Vec::<u64>::new());
     assert!(!volume.locked);
@@ -427,7 +408,7 @@ fn dismount_failure_unlocks_and_reopens_without_changing_attributes() {
         failures: vec![("dismount", 1)],
         ..Default::default()
     };
-    assert!(change_attributes(&mut volume, KNOWN_ATTRIBUTES & !READ_ONLY, true).is_err());
+    assert!(change_attributes(&mut volume, KNOWN_ATTRIBUTES & !READ_ONLY).is_err());
     assert_eq!(volume.events, ["lock", "dismount", "unlock", "reopen"]);
     assert_eq!(volume.sets, Vec::<u64>::new());
     assert!(!volume.locked);
@@ -440,7 +421,7 @@ fn each_failed_enable_stage_prevents_file_action_and_attempts_restoration() {
             failures: vec![(stage, 1)],
             ..Default::default()
         };
-        let error = probe(&mut volume, true, || panic!("must not run")).unwrap_err();
+        let error = with_writable_snapshot(&mut volume, || panic!("must not run")).unwrap_err();
         assert!(format!("{error:#}").contains(stage), "{error:#}");
         assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
         assert!(!volume.locked);
@@ -453,7 +434,7 @@ fn partial_attribute_change_still_unlocks_reopens_and_restores() {
         fail_enable: true,
         ..Default::default()
     };
-    assert!(probe(&mut volume, true, || panic!("must not run")).is_err());
+    assert!(with_writable_snapshot(&mut volume, || panic!("must not run")).is_err());
     assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
     assert_eq!(
         volume
@@ -473,7 +454,7 @@ fn restoration_remount_failure_is_not_success() {
             failures: vec![(stage, 2)],
             ..Default::default()
         };
-        let error = probe(&mut volume, true, || Ok(())).unwrap_err();
+        let error = with_writable_snapshot(&mut volume, || Ok(())).unwrap_err();
         assert!(
             format!("{error:#}").contains("RESTORATION FAILED"),
             "{stage}: {error:#}"
@@ -496,7 +477,7 @@ fn remount_reports_primary_unlock_and_reopen_errors_together() {
         failures: vec![("dismount", 1), ("unlock", 1), ("reopen", 1)],
         ..Default::default()
     };
-    let error = change_attributes(&mut volume, KNOWN_ATTRIBUTES & !READ_ONLY, true).unwrap_err();
+    let error = change_attributes(&mut volume, KNOWN_ATTRIBUTES & !READ_ONLY).unwrap_err();
     for expected in ["dismount", "unlock", "REOPEN FAILED"] {
         assert!(format!("{error:#}").contains(expected), "{error:#}");
     }
@@ -507,7 +488,7 @@ fn remount_reports_primary_unlock_and_reopen_errors_together() {
 fn remount_restoration_also_runs_on_file_failure_and_unwinding() {
     let mut volume = MockVolume::default();
     assert!(
-        probe(&mut volume, true, || Err(anyhow::anyhow!(
+        with_writable_snapshot(&mut volume, || Err(anyhow::anyhow!(
             "file is still read-only"
         )))
         .is_err()
@@ -524,7 +505,7 @@ fn remount_restoration_also_runs_on_file_failure_and_unwinding() {
     let mut volume = MockVolume::default();
     assert!(
         catch_unwind(AssertUnwindSafe(|| {
-            let _ = probe(&mut volume, true, || panic!("simulated file failure"));
+            let _ = with_writable_snapshot(&mut volume, || panic!("simulated file failure"));
         }))
         .is_err()
     );
@@ -534,16 +515,21 @@ fn remount_restoration_also_runs_on_file_failure_and_unwinding() {
 
 #[test]
 fn remount_recovery_preserves_other_attributes() {
-    let mut volume = MockVolume {
-        attributes: KNOWN_ATTRIBUTES & !READ_ONLY,
-        ..Default::default()
-    };
-    restore_readonly(&mut volume, true).unwrap();
-    assert_eq!(
-        volume.events,
-        ["lock", "dismount", "set", "unlock", "reopen"]
-    );
-    assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
+    for original in [
+        KNOWN_ATTRIBUTES & !READ_ONLY,
+        KNOWN_ATTRIBUTES & !READ_ONLY & !HIDDEN,
+    ] {
+        let mut volume = MockVolume {
+            attributes: original,
+            ..Default::default()
+        };
+        restore_readonly(&mut volume).unwrap();
+        assert_eq!(
+            volume.events,
+            ["lock", "dismount", "set", "unlock", "reopen"]
+        );
+        assert_eq!(volume.attributes, original | READ_ONLY);
+    }
 }
 
 #[test]
@@ -555,7 +541,7 @@ fn unwinding_while_locked_releases_lock_before_restoring_attributes() {
         };
         assert!(
             catch_unwind(AssertUnwindSafe(|| {
-                let _ = probe(&mut volume, true, || panic!("must not run"));
+                let _ = with_writable_snapshot(&mut volume, || panic!("must not run"));
             }))
             .is_err()
         );
@@ -573,12 +559,16 @@ fn unwinding_while_locked_releases_lock_before_restoring_attributes() {
 }
 
 #[test]
-fn internal_entry_points_reject_attribute_only_transitions_without_mutation() {
-    let mut volume = MockVolume::default();
-    assert!(with_writable_snapshot(&mut volume, false, || panic!("must not run")).is_err());
-    assert!(change_attributes(&mut volume, KNOWN_ATTRIBUTES, false).is_err());
-    assert!(restore_readonly(&mut volume, false).is_err());
-    assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
-    assert_eq!(volume.events, Vec::<&str>::new());
-    assert_eq!(volume.sets, Vec::<u64>::new());
+fn attribute_changes_always_lock_dismount_and_reopen() {
+    for attributes in [KNOWN_ATTRIBUTES, KNOWN_ATTRIBUTES & !READ_ONLY] {
+        let mut volume = MockVolume::default();
+        change_attributes(&mut volume, attributes).unwrap();
+        assert_eq!(
+            volume.events,
+            ["lock", "dismount", "set", "unlock", "reopen"]
+        );
+        assert_eq!(volume.attributes, attributes);
+        assert_eq!(volume.sets, [attributes]);
+        assert!(!volume.locked);
+    }
 }

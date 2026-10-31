@@ -1,135 +1,116 @@
 # Shadow Realm
 
-An experimental Windows utility for inspecting VSS shadow copies and deleting
-one selected file name from a snapshot.
+Shadow Realm is an experimental Windows x64 command-line tool for creating,
+reading, updating, and deleting individual files in an existing Volume Shadow
+Copy Service (VSS) snapshot.
 
-**Disposable Windows x64 VMs only.** Use an elevated terminal, a VM checkpoint,
-and sacrificial data. Never use production disks or snapshots. Shadow Realm is
-not a supported VSS management tool, a recovery tool, or a secure-erasure tool.
+Reads never remount the snapshot. Create, update, and delete temporarily
+remount it writable, perform the operation, then attempt to restore its original
+read-only attributes, including after a failure. Operations target the shadow
+copy, not the original live file. Shadow Realm does not create snapshots.
 
-## What
+**Disposable Windows VMs only.** Run in an elevated PowerShell terminal with a
+VM checkpoint and sacrificial data, never production snapshots. Restoring
+read-only attributes is not rollback: a failed operation can leave partial
+changes or uncertain filesystem state. If restoration fails, preserve the errors
+and revert the VM checkpoint. Deleting a file is not secure erasure.
 
-Windows Volume Shadow Copy Service (VSS) captures point-in-time copies of a
-volume. Shadow Realm works with an existing shadow copy to:
+See the [demo](demo/README.md) for a disposable lab setup and the
+[research notes](demo/RESEARCH.md) for known limitations.
 
-- Inspect its attributes and driver read-only status.
-- Preview a file without changing it.
-- Diagnose volume locking or probe whether writes are possible.
-- Attempt to delete exactly one selected file name, then restore the original
-  read-only attributes.
+## Commands
 
-The utility is written in Rust and uses Microsoft's `windows-sys` bindings for
-Windows APIs. It does not create disks or snapshots; the optional
-[demo](demo/README.md) does that.
+| Command | What it does |
+| --- | --- |
+| `create` | Creates a new file from a local `--source` file. Never overwrites an existing name. |
+| `read` | Writes exact file bytes to stdout, or to a new local `--output` file. Never remounts or overwrites an output file. |
+| `update` | Replaces an existing file's entire contents from `--source`, including truncation. Not atomic. |
+| `delete` | Deletes one existing file name. |
 
-## Why
+Every command takes `--snapshot NUMBER`. File commands also take `--file`, a
+path relative to the snapshot root, such as `Demo\data.bin`. Only regular files
+are supported; parent directories must already exist. Unsafe paths, reparse
+points, and busy files are rejected rather than bypassed.
 
-Deleting a file from a live volume can leave its earlier copy in a VSS
-snapshot. Shadow Realm explores whether that snapshot copy can be removed
-independently, without deleting the entire snapshot.
+Create and update copy exact bytes, not metadata, and buffer the source in
+memory before remounting. Update rejects files with multiple hard links.
+Use `--output` for binary reads rather than PowerShell redirection.
 
-This is a research utility, not a promise that arbitrary snapshots can be
-changed safely. Some configurations reject writes; earlier experiments also
-exposed filesystem errors. See the [research notes](demo/RESEARCH.md) for the
-observations and their limits. Deleting a name does not securely erase its data.
+Mutations require `--confirm-lab`; delete also requires `--confirm-delete`.
+Use `--dry-run` **instead of** confirmation flags to preview a mutation without
+changing attributes or contents. A dry run does not prove the write will succeed.
 
-## How
+### Examples
 
-### Build
+Find the intended lab snapshot:
 
-Install Rust 1.85+ and the Visual Studio Windows x64 C++ build tools, then run
-from the repository root:
+```powershell
+Get-CimInstance Win32_ShadowCopy | Select-Object ID, DeviceObject, VolumeName
+```
+
+For a device ending in `HarddiskVolumeShadowCopy42`, use `--snapshot 42`, not
+its VSS GUID or drive letter. Recheck the device and source volume each time;
+numbers can change.
+
+From the folder containing `shadow-realm.exe`, with local `payload.bin` and
+`replacement.bin` files and an existing `Demo` directory in the chosen snapshot:
+
+```powershell
+# Preview, then create a new file.
+.\shadow-realm.exe create --snapshot 42 --file 'Demo\new.bin' --source '.\payload.bin' --dry-run
+.\shadow-realm.exe create --snapshot 42 --file 'Demo\new.bin' --source '.\payload.bin' --confirm-lab
+
+# Export, replace, then delete that file.
+.\shadow-realm.exe read --snapshot 42 --file 'Demo\new.bin' --output '.\export.bin'
+.\shadow-realm.exe update --snapshot 42 --file 'Demo\new.bin' --source '.\replacement.bin' --confirm-lab
+.\shadow-realm.exe delete --snapshot 42 --file 'Demo\new.bin' --confirm-lab --confirm-delete
+```
+
+Keep the executable and terminal outside the snapshot and close other tools
+accessing it. Busy snapshots are never force-dismounted.
+
+### Debug commands
+
+Low-level maintenance lives under `debug`:
+
+| Command | What it does |
+| --- | --- |
+| `debug inspect` | Reports snapshot attributes and driver writable status. |
+| `debug diagnose-lock` | Tests locking before and after previewing `--file`; does not remount. |
+| `debug probe` | Remounts writable, creates/verifies/removes an owned test file, then restores read-only. |
+| `debug restore-readonly` | Attempts read-only recovery through a remount. Not undo. |
+
+All take `--snapshot`; all except `inspect` also require `--confirm-lab`.
+Lock diagnosis can flush caches and briefly exclude other access.
+Use `create --help`, `read --help`, or `debug --help` for the full options.
+
+Exit codes are `0` for success, `1` for operational failure, and `2` for invalid
+arguments. `--version` prints the executable version.
+
+## Install
+
+### Build from source
+
+For the unreleased commands described above, use the source revision matching
+this README. Install [Rust](https://www.rust-lang.org/tools/install) 1.85+ and
+the Visual Studio C++ Build Tools with the Windows SDK, then run from the
+repository root:
 
 ```powershell
 cargo build --release --locked --target x86_64-pc-windows-msvc
 .\target\x86_64-pc-windows-msvc\release\shadow-realm.exe --help
 ```
 
-Alternatively, use `shadow-realm.exe` from an extracted release. Release
-binaries are unsigned; compare the ZIP's SHA-256 hash with its accompanying
-`SHA256SUMS.txt`.
+The executable is in `target\x86_64-pc-windows-msvc\release`. Run the examples
+from that folder, or copy `shadow-realm.exe` to a folder on your `PATH`.
 
-### Select and preview
+### Prebuilt releases
 
-In the disposable VM, list snapshots and identify the intended lab copy:
+Download a Windows x64 ZIP from [Releases](https://github.com/jsmnsr/shadow-realm/releases),
+compare its SHA-256 hash with the accompanying `SHA256SUMS.txt`, and extract it.
+Run `.\shadow-realm.exe --help` from the extracted folder; no installer is needed.
+Binaries are unsigned. Published releases may predate this CLI, so follow their
+bundled README and [release notes](RELEASE-NOTES.md).
 
-```powershell
-Get-CimInstance Win32_ShadowCopy | Select-Object ID, DeviceObject, VolumeName
-```
-
-`--snapshot` takes the number at the end of `HarddiskVolumeShadowCopy42`,
-not a VSS GUID or drive letter. Verify the source volume and device each time;
-numbers can change after a reboot or reconnect.
-
-From the directory containing `shadow-realm.exe`, replace `42` and the file
-path with your lab target:
-
-```powershell
-.\shadow-realm.exe inspect --snapshot 42
-.\shadow-realm.exe delete --snapshot 42 --file 'Demo\delete-me.txt' --dry-run
-```
-
-### Delete in the lab
-
-Close tools accessing the snapshot and keep the executable and terminal
-outside it. Only after checking the preview:
-
-```powershell
-.\shadow-realm.exe delete --snapshot 42 --file 'Demo\delete-me.txt' --confirm-lab --confirm-delete --remount-snapshot
-```
-
-Shadow Realm locks and dismounts the selected shadow volume, requests writable
-attributes, reopens it, and deletes the file by handle. It then repeats the
-remount sequence to restore read-only attributes. It rejects unsafe paths,
-reparse points, changed file identities, and busy files; it does not bypass
-permissions or force dismounts.
-
-Run `--help` for `probe`, `diagnose-lock`, and `restore-readonly`. Lock diagnosis
-is not passive: it can flush caches and briefly exclude other access.
-All mutations require explicit lab consent and remount transitions.
-
-For a complete source-versus-snapshot walkthrough with an owned virtual disk,
-use the **[demo guide](demo/README.md)**.
-
-## Failure and recovery limits
-
-**Restoring read-only flags is not rollback or proof of filesystem integrity.**
-A failed command may already have deleted the file or left uncertain state.
-Do not interrupt a mutation, blindly retry, or fall back to attribute-only
-restoration. Preserve errors and revert the disposable VM checkpoint if
-restoration fails. `restore-readonly` is best-effort recovery, not undo.
-
-Exit codes are `0` for success, `1` for operational failure, and `2` for invalid
-arguments. Reboot/detach persistence and general snapshot compatibility remain
-unestablished.
-
-## Development
-
-We follow the [Microsoft Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/).
-Small, crate-private modules separate CLI parsing, path validation, snapshot
-policy, and Windows adapters. Unsafe code is limited to documented Win32
-boundaries; policy and parsing forbid it.
-
-All Rust tests live under `tests\`: `cli.rs` exercises the executable, while
-`unit\` mirrors the source modules. Unit tests are linked as test-only child
-modules so they can exercise private internals without widening the public API.
-
-Prefer established, actively maintained crates over reimplementing platform
-APIs or general-purpose infrastructure. Evaluate maintenance, licensing, and
-compiler compatibility; enable only needed features and commit `Cargo.lock`.
-Microsoft's `windows-sys` supplies Win32 bindings, `clap` parses arguments,
-`anyhow` preserves error context/backtraces, and `tempfile` manages test fixtures.
-Our code retains ownership, validation, snapshot policy, and explicit cleanup
-failure reporting.
-
-`scripts\Test.ps1` fetches locked dependencies, then verifies the utility without
-live VSS operations. `scripts\Package.ps1` creates the release ZIP from a clean
-committed checkout using Rust 1.99.1. Both accept `-Offline` when the dependencies
-are already cached. For a manual offline build, first run
-`cargo fetch --locked --target x86_64-pc-windows-msvc`, then add `--offline` to
-the build command. See [release notes](RELEASE-NOTES.md) for compatibility changes.
-
-## License
-
-[MIT](LICENSE). The license does not change the experimental safety limits above.
-Dependency licenses are included in [third-party notices](THIRD-PARTY-NOTICES.md).
+Licensed under [MIT](LICENSE); see [third-party notices](THIRD-PARTY-NOTICES.md)
+for dependency licenses.

@@ -137,10 +137,7 @@ impl<V: Volume> Drop for RemountGuard<'_, V> {
     }
 }
 
-fn change_attributes<V: Volume>(volume: &mut V, attributes: u64, remount: bool) -> Result<()> {
-    if !remount {
-        anyhow::bail!("Attribute-only transitions are disabled; remount consent is required");
-    }
+fn change_attributes<V: Volume>(volume: &mut V, attributes: u64) -> Result<()> {
     println!("Locking the selected shadow device; busy snapshots will not be force-dismounted.");
     volume.lock()?;
     let mut guard = RemountGuard {
@@ -161,13 +158,12 @@ struct RestoreGuard<'a, V: Volume> {
     volume: &'a mut V,
     original: u64,
     armed: bool,
-    remount: bool,
 }
 
 impl<V: Volume> RestoreGuard<'_, V> {
     fn restore(&mut self) -> Result<()> {
         self.armed = false;
-        change_attributes(self.volume, self.original, self.remount)?;
+        change_attributes(self.volume, self.original)?;
         let observed = self.volume.attributes()?;
         if observed != self.original {
             anyhow::bail!(
@@ -191,7 +187,7 @@ impl<V: Volume> Drop for RestoreGuard<'_, V> {
             if let Err(error) = self.restore() {
                 eprintln!("RESTORATION FAILED during unwinding: {error:?}");
                 eprintln!(
-                    "Use restore-readonly on this snapshot or revert the disposable VM checkpoint."
+                    "Use debug restore-readonly on this snapshot or revert the disposable VM checkpoint."
                 );
             }
         }
@@ -200,17 +196,13 @@ impl<V: Volume> Drop for RestoreGuard<'_, V> {
 
 pub(crate) fn with_writable_snapshot<V: Volume>(
     volume: &mut V,
-    remount: bool,
     action: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
-    if !remount {
-        anyhow::bail!("Writable operations require remount-based transitions and restoration");
-    }
     let original = volume.attributes()?;
     check_snapshot_attributes(original)?;
     if original & READ_ONLY == 0 {
         anyhow::bail!(
-            "Snapshot is already writable; refusing operation. Use restore-readonly if appropriate."
+            "Snapshot is already writable; refusing operation. Use debug restore-readonly if appropriate."
         );
     }
     if volume.is_writable()? {
@@ -223,11 +215,10 @@ pub(crate) fn with_writable_snapshot<V: Volume>(
         volume,
         original,
         armed: true,
-        remount,
     };
     let operation = (|| {
         println!("Requesting temporary writable attributes: {desired:#018x}");
-        change_attributes(guard.volume, desired, remount).context("Write-enable request failed")?;
+        change_attributes(guard.volume, desired).context("Write-enable request failed")?;
         let observed = guard.volume.attributes()?;
         if observed != desired {
             anyhow::bail!(
@@ -244,15 +235,15 @@ pub(crate) fn with_writable_snapshot<V: Volume>(
     combine(
         operation,
         restoration,
-        "RESTORATION FAILED; snapshot state is uncertain. Use restore-readonly or revert the VM checkpoint",
+        "RESTORATION FAILED; snapshot state is uncertain. Use debug restore-readonly or revert the VM checkpoint",
     )
 }
 
-pub(crate) fn restore_readonly<V: Volume>(volume: &mut V, remount: bool) -> Result<()> {
+pub(crate) fn restore_readonly<V: Volume>(volume: &mut V) -> Result<()> {
     let before = volume.attributes()?;
     check_snapshot_attributes(before)?;
     let desired = before | READ_ONLY;
-    change_attributes(volume, desired, remount).context("Read-only recovery failed; snapshot state is uncertain. Do not force dismount or use attribute-only recovery; revert the disposable VM checkpoint")?;
+    change_attributes(volume, desired).context("Read-only recovery failed; snapshot state is uncertain. Do not force dismount or use attribute-only recovery; revert the disposable VM checkpoint")?;
     let observed = volume.attributes()?;
     if observed != desired || volume.is_writable()? {
         anyhow::bail!("Read-only restoration not confirmed; observed attributes {observed:#018x}");
