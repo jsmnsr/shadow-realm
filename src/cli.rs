@@ -1,65 +1,18 @@
-//! Command-line parsing and consent checks; never opens files or devices.
+//! Clap command definitions, generated help, and typed argument validation.
 
 #![forbid(unsafe_code)]
 
 use crate::paths::validate_relative_file;
-use anyhow::{Context, Result};
+use clap::{Arg, ArgAction, ArgMatches, Command as ClapCommand};
 use std::num::NonZeroU32;
 
-pub(crate) const HELP: &str = concat!(
-    "\
-Shadow Realm ",
-    env!("CARGO_PKG_VERSION"),
-    " -- DISPOSABLE WINDOWS VM ONLY
-
-  shadow-realm create --snapshot NUMBER --file RELATIVE_PATH --source LOCAL_FILE --confirm-lab
-  shadow-realm read --snapshot NUMBER --file RELATIVE_PATH [--output LOCAL_FILE]
-  shadow-realm update --snapshot NUMBER --file RELATIVE_PATH --source LOCAL_FILE --confirm-lab
-  shadow-realm delete --snapshot NUMBER --file RELATIVE_PATH --dry-run
-  shadow-realm delete --snapshot NUMBER --file RELATIVE_PATH --confirm-lab --confirm-delete
-
-create: create one new regular file; existing files are never overwritten.
-read: copy exact bytes to stdout, or create a new --output file. No remount.
-update: replace an existing regular file's contents with bytes from --source.
-delete: remove exactly one existing regular-file name. Requires --confirm-delete.
---source: local regular file, buffered in memory before any remount.
---dry-run: preview create/update/delete without changing the snapshot; no confirmations.
-Parents must already exist. No wildcards, traversal, reparse points, or permission bypass.
-Updates reject multiple hard links to avoid changing other names.
-Mutations automatically lock/remount writable, operate, then remount read-only.
-Busy snapshots are never force-dismounted. Restoration is not rollback.
-Use debug --help for low-level inspection, diagnosis, probing, and recovery.
-
-NUMBER is the numeric suffix of HarddiskVolumeShadowCopyNUMBER, NOT a VSS GUID.
-Only exact shadow-device targets are accepted; source disks and paths are not.
-Being the newest snapshot is NOT sufficient to guarantee write support.
-Run elevated. Do not use production snapshots or host-mounted production disks.
-Driver read-only status does NOT prove filesystem integrity or full recovery.
-Restoration is best-effort on failure and is NOT guaranteed after termination,
-power loss, a crash, or a driver error. File cleanup is not a full rollback.
-"
-);
-
-pub(crate) const DEBUG_HELP: &str = "\
-Shadow Realm debug commands -- DISPOSABLE WINDOWS VM ONLY
-
-  shadow-realm debug inspect --snapshot NUMBER
-  shadow-realm debug diagnose-lock --snapshot NUMBER --file RELATIVE_PATH --confirm-lab
-  shadow-realm debug probe --snapshot NUMBER --confirm-lab
-  shadow-realm debug restore-readonly --snapshot NUMBER --confirm-lab
-
-inspect: query attributes and the driver's writable status; no mutations.
-diagnose-lock: compare lock/unlock before and after previewing an existing file.
-               No attribute changes, dismounts, or deletion. Locking can flush
-               filesystem caches and briefly excludes other access.
-probe: temporarily request writable attributes, create/read/delete one unique
-       test file in the snapshot root, then restore the original attributes.
-restore-readonly: recovery action; set READ_ONLY while preserving other attributes.
---remount-snapshot: debug-only compatibility flag; mutations already remount.
-Attribute-only restoration was removed after lab NTFS flush failures.
-Busy snapshots are never force-dismounted. Restoration is best-effort, not rollback.
-Run elevated in a disposable VM; never use production snapshots.
-";
+const SAFETY_NOTICE: &str = "\
+DISPOSABLE WINDOWS VM ONLY. Run elevated; never use production snapshots.
+Snapshot numbers are HarddiskVolumeShadowCopy suffixes, not VSS GUIDs.
+Mutations automatically remount writable, operate, then restore read-only.
+Busy snapshots are never force-dismounted. Attribute-only transitions are disabled.
+Restoration is best-effort, not rollback or proof of filesystem integrity.
+Errors, termination, power loss, or driver failures can leave uncertain state.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Command {
@@ -77,168 +30,225 @@ pub(crate) enum Command {
 pub(crate) struct Options {
     pub(crate) command: Command,
     pub(crate) snapshot: NonZeroU32,
-    pub(crate) remount: bool,
     pub(crate) file: Option<String>,
     pub(crate) source: Option<String>,
     pub(crate) output: Option<String>,
     pub(crate) dry_run: bool,
 }
 
-pub(crate) fn parse_args(args: &[String]) -> Result<Option<Options>> {
-    if args.is_empty()
-        || args == ["--help"]
-        || args == ["-h"]
-        || args == ["debug"]
-        || args == ["debug", "--help"]
-        || args == ["debug", "-h"]
-    {
-        return Ok(None);
-    }
-    let debug = args[0] == "debug";
-    let command_index = usize::from(debug);
-    let command = match args[command_index].as_str() {
-        "inspect" => Command::Inspect,
-        "probe" => Command::Probe,
-        "restore-readonly" => Command::RestoreReadonly,
-        "create" => Command::Create,
-        "read" => Command::Read,
-        "update" => Command::Update,
-        "delete" => Command::Delete,
-        "diagnose-lock" => Command::DiagnoseLock,
-        other => anyhow::bail!("Unknown command: {other}"),
-    };
-    let mut matches = clap::Command::new("shadow-realm")
+fn command_tree() -> ClapCommand {
+    ClapCommand::new("shadow-realm")
+        .bin_name("shadow-realm")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Create, read, update, and delete files in a selected VSS shadow copy")
+        .after_help(SAFETY_NOTICE)
         .no_binary_name(true)
-        .disable_help_flag(true)
-        .args([
-            clap::arg!(--snapshot <NUMBER>),
-            clap::arg!(--file <RELATIVE_PATH>).allow_hyphen_values(true),
-            clap::arg!(--source <LOCAL_FILE>),
-            clap::arg!(--output <LOCAL_FILE>),
-            clap::arg!(--"confirm-lab"),
-            clap::arg!(--"remount-snapshot"),
-            clap::arg!(--"dry-run"),
-            clap::arg!(--"confirm-delete"),
-            clap::arg!(--"restore-attributes-only"),
-        ])
-        .try_get_matches_from(&args[command_index + 1..])?;
-    if matches.get_flag("restore-attributes-only") {
-        anyhow::bail!(
-            "--restore-attributes-only was removed after NTFS flush failures. Attribute flags alone do not establish clean filesystem recovery. Mutations now remount automatically; if restoration fails, revert the disposable VM checkpoint."
-        );
-    }
-    let value = matches
-        .get_one::<String>("snapshot")
-        .context("--snapshot is required")?;
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(
+            mutation(
+                "create",
+                "Create a new file without overwriting an existing name",
+            )
+            .arg(source_arg()),
+        )
+        .subcommand(
+            leaf("read", "Read exact file bytes without remounting")
+                .arg(file_arg())
+                .arg(
+                    local_path_arg("output").help(
+                        "Create a new local output file; otherwise write raw bytes to stdout",
+                    ),
+                ),
+        )
+        .subcommand(
+            mutation("update", "Replace an existing file's entire contents")
+                .long_about(
+                    "Replace an existing file's entire contents, including truncation. \
+                     Updates are not atomic and reject files with multiple hard links.",
+                )
+                .arg(source_arg()),
+        )
+        .subcommand(
+            mutation("delete", "Delete exactly one existing regular-file name").arg(
+                flag("confirm-delete", "Confirm deletion of the selected name")
+                    .required_unless_present("dry-run")
+                    .conflicts_with("dry-run"),
+            ),
+        )
+        .subcommand(
+            ClapCommand::new("debug")
+                .about("Low-level inspection, diagnosis, probing, and recovery")
+                .after_help(SAFETY_NOTICE)
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(leaf(
+                    "inspect",
+                    "Query attributes and driver writable status",
+                ))
+                .subcommand(
+                    leaf(
+                        "diagnose-lock",
+                        "Compare volume locking before and after file preview",
+                    )
+                    .long_about(
+                        "Compare lock/unlock before and after previewing an existing file. \
+                             No attribute changes or dismounts; locking can flush caches and \
+                             briefly exclude other access.",
+                    )
+                    .arg(file_arg())
+                    .arg(lab_consent().required(true)),
+                )
+                .subcommand(
+                    leaf(
+                        "probe",
+                        "Create, verify, and remove an owned test file, then restore read-only",
+                    )
+                    .arg(lab_consent().required(true)),
+                )
+                .subcommand(
+                    leaf(
+                        "restore-readonly",
+                        "Best-effort read-only recovery, preserving other attributes; not undo",
+                    )
+                    .arg(lab_consent().required(true)),
+                ),
+        )
+}
+
+fn leaf(name: &'static str, about: &'static str) -> ClapCommand {
+    ClapCommand::new(name)
+        .about(about)
+        .after_help(SAFETY_NOTICE)
+        .arg(
+            Arg::new("snapshot")
+                .long("snapshot")
+                .value_name("NUMBER")
+                .help("Positive numeric suffix of the selected shadow device")
+                .required(true)
+                .value_parser(snapshot_number),
+        )
+}
+
+fn mutation(name: &'static str, about: &'static str) -> ClapCommand {
+    leaf(name, about)
+        .arg(file_arg())
+        .arg(
+            lab_consent()
+                .required_unless_present("dry-run")
+                .conflicts_with("dry-run"),
+        )
+        .arg(flag(
+            "dry-run",
+            "Preview without changing attributes or file contents",
+        ))
+}
+
+fn flag(name: &'static str, help: &'static str) -> Arg {
+    Arg::new(name)
+        .long(name)
+        .action(ArgAction::SetTrue)
+        .help(help)
+}
+
+fn lab_consent() -> Arg {
+    flag(
+        "confirm-lab",
+        "Confirm this is a disposable Windows VM with sacrificial data",
+    )
+}
+
+fn file_arg() -> Arg {
+    Arg::new("file")
+        .long("file")
+        .value_name("RELATIVE_PATH")
+        .help(
+            "One snapshot-relative regular file; existing parents, no wildcards or reparse points",
+        )
+        .required(true)
+        .allow_hyphen_values(true)
+        .value_parser(relative_file)
+}
+
+fn local_path_arg(name: &'static str) -> Arg {
+    Arg::new(name)
+        .long(name)
+        .value_name("LOCAL_FILE")
+        .value_parser(local_path)
+}
+
+fn source_arg() -> Arg {
+    local_path_arg("source")
+        .help("Local regular file; exact bytes buffered in memory before remounting")
+        .required(true)
+}
+
+fn snapshot_number(value: &str) -> Result<NonZeroU32, String> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        anyhow::bail!("--snapshot must be a positive decimal number, not a path");
+        return Err("must be a positive decimal number, not a path".into());
     }
     let number = value
         .parse::<u32>()
-        .context("--snapshot is outside the u32 range")?;
-    let snapshot = NonZeroU32::new(number).context("--snapshot must be greater than zero")?;
-    let confirmed = matches.get_flag("confirm-lab");
-    let remount = matches.get_flag("remount-snapshot");
-    let dry_run = matches.get_flag("dry-run");
-    let confirm_delete = matches.get_flag("confirm-delete");
-    let file = matches.remove_one::<String>("file");
-    if let Some(value) = &file {
-        validate_relative_file(value)?;
-    }
-    let maintenance = matches!(
-        command,
-        Command::Inspect | Command::Probe | Command::RestoreReadonly | Command::DiagnoseLock
-    );
-    if maintenance && !debug {
-        anyhow::bail!("This maintenance command requires the debug subcommand; use debug --help");
-    }
-    if debug && !maintenance {
-        anyhow::bail!("CRUD commands are top-level; do not prefix them with debug");
-    }
-    if remount && !debug {
-        anyhow::bail!(
-            "--remount-snapshot is debug-only and no longer needed; mutations remount automatically"
-        );
-    }
-    let options = Options {
-        command,
-        snapshot,
-        remount: !dry_run
-            && matches!(
-                command,
-                Command::Create
-                    | Command::Update
-                    | Command::Delete
-                    | Command::Probe
-                    | Command::RestoreReadonly
-            ),
-        file,
-        source: matches.remove_one::<String>("source"),
-        output: matches.remove_one::<String>("output"),
-        dry_run,
-    };
-    validate_options(&options, confirmed, confirm_delete, remount)?;
-    Ok(Some(options))
+        .map_err(|error| format!("--snapshot is outside the u32 range: {error}"))?;
+    NonZeroU32::new(number).ok_or_else(|| "--snapshot must be greater than zero".into())
 }
 
-fn validate_options(
-    options: &Options,
-    confirmed: bool,
-    confirm_delete: bool,
-    remount: bool,
-) -> Result<()> {
-    let command = options.command;
-    for (flag, value) in [("--source", &options.source), ("--output", &options.output)] {
-        if value.as_ref().is_some_and(|value| {
-            value.is_empty() || value.starts_with("--") || value.contains('\0')
-        }) {
-            anyhow::bail!("{flag} requires a nonempty local path");
-        }
+fn relative_file(value: &str) -> Result<String, String> {
+    validate_relative_file(value).map_err(|error| error.to_string())?;
+    Ok(value.to_owned())
+}
+
+fn local_path(value: &str) -> Result<String, String> {
+    if value.is_empty() || value.starts_with("--") || value.contains('\0') {
+        return Err("must be a nonempty local path (prefix option-like names with .\\)".into());
     }
-    if matches!(command, Command::Create | Command::Update | Command::Delete) {
-        if options.file.is_none() {
-            anyhow::bail!("create/update/delete require --file with a snapshot-relative path");
-        }
-        if options.dry_run && (confirmed || confirm_delete || remount) {
-            anyhow::bail!("--dry-run cannot be combined with mutation or confirmation flags");
-        }
-        if command == Command::Delete && !options.dry_run && !confirm_delete {
-            anyhow::bail!(
-                "Deletion requires --confirm-delete; use --dry-run to preview the target"
-            );
-        }
-    } else if matches!(command, Command::Read | Command::DiagnoseLock) {
-        if options.file.is_none() {
-            anyhow::bail!("read/diagnose-lock require --file with a snapshot-relative path");
-        }
-        if options.dry_run || confirm_delete || remount {
-            anyhow::bail!("read/diagnose-lock do not accept deletion, dry-run, or remount flags");
-        }
-    } else if options.file.is_some() || options.dry_run || confirm_delete {
-        anyhow::bail!(
-            "--file requires a file operation or diagnose-lock; --dry-run requires a mutation"
-        );
+    Ok(value.to_owned())
+}
+
+pub(crate) fn parse_args(args: &[String]) -> Result<Options, clap::Error> {
+    let matches = command_tree().try_get_matches_from(args)?;
+    let (command, matches) = match matches.subcommand() {
+        Some(("create", matches)) => (Command::Create, matches),
+        Some(("read", matches)) => (Command::Read, matches),
+        Some(("update", matches)) => (Command::Update, matches),
+        Some(("delete", matches)) => (Command::Delete, matches),
+        Some(("debug", matches)) => match matches.subcommand() {
+            Some(("inspect", matches)) => (Command::Inspect, matches),
+            Some(("diagnose-lock", matches)) => (Command::DiagnoseLock, matches),
+            Some(("probe", matches)) => (Command::Probe, matches),
+            Some(("restore-readonly", matches)) => (Command::RestoreReadonly, matches),
+            _ => unreachable!("Clap requires a declared debug subcommand"),
+        },
+        _ => unreachable!("Clap requires a declared subcommand"),
+    };
+    Ok(options_from_matches(command, matches))
+}
+
+fn options_from_matches(command: Command, matches: &ArgMatches) -> Options {
+    let mutation = matches!(command, Command::Create | Command::Update | Command::Delete);
+    let dry_run = mutation && matches.get_flag("dry-run");
+    Options {
+        command,
+        snapshot: *matches
+            .get_one::<NonZeroU32>("snapshot")
+            .expect("Clap requires a validated snapshot number"),
+        file: if mutation || matches!(command, Command::Read | Command::DiagnoseLock) {
+            matches.get_one::<String>("file").cloned()
+        } else {
+            None
+        },
+        source: if matches!(command, Command::Create | Command::Update) {
+            matches.get_one::<String>("source").cloned()
+        } else {
+            None
+        },
+        output: if command == Command::Read {
+            matches.get_one::<String>("output").cloned()
+        } else {
+            None
+        },
+        dry_run,
     }
-    if confirm_delete && command != Command::Delete {
-        anyhow::bail!("--confirm-delete requires delete");
-    }
-    if matches!(command, Command::Create | Command::Update) {
-        if options.source.is_none() {
-            anyhow::bail!("create/update require --source with a local regular file");
-        }
-    } else if options.source.is_some() {
-        anyhow::bail!("--source requires create or update");
-    }
-    if options.output.is_some() && command != Command::Read {
-        anyhow::bail!("--output requires read");
-    }
-    if !matches!(command, Command::Inspect | Command::Read) && !options.dry_run && !confirmed {
-        anyhow::bail!("Mutation and locking commands require --confirm-lab; use a disposable VM");
-    }
-    if matches!(command, Command::Inspect | Command::Read) && (confirmed || remount) {
-        anyhow::bail!("inspect/read do not use --confirm-lab or --remount-snapshot");
-    }
-    Ok(())
 }
 
 #[cfg(test)]

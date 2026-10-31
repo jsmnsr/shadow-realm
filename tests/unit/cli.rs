@@ -1,4 +1,19 @@
 use super::*;
+use clap::error::ErrorKind;
+
+fn parse(arguments: &[&str]) -> Result<Options, clap::Error> {
+    parse_args(
+        &arguments
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+    )
+}
+
+#[test]
+fn clap_command_tree_is_consistent() {
+    command_tree().debug_assert();
+}
 
 #[test]
 fn all_safety_flag_combinations_match_the_command_policy() {
@@ -44,7 +59,7 @@ fn all_safety_flag_combinations_match_the_command_policy() {
             let permitted = match command {
                 "inspect" => mask == 0,
                 "probe" | "restore-readonly" => {
-                    lab && !dry && !delete && !file && !source && !output
+                    lab && !remount && !dry && !delete && !file && !source && !output
                 }
                 "diagnose-lock" => file && lab && !remount && !dry && !delete && !source && !output,
                 "delete" => {
@@ -65,20 +80,19 @@ fn all_safety_flag_combinations_match_the_command_policy() {
 }
 
 #[test]
-fn option_like_filenames_are_values_not_consent_flags() {
+fn option_like_filenames_are_values_not_consent_or_help_flags() {
     for file in [
         "--",
         "-h",
         "--help",
+        "--version",
         "--confirm-lab",
         "--dry-run",
         "--restore-attributes-only",
         "--debug",
         "debug",
     ] {
-        let options = parse(&["delete", "--snapshot", "3", "--file", file, "--dry-run"])
-            .unwrap()
-            .unwrap();
+        let options = parse(&["delete", "--snapshot", "3", "--file", file, "--dry-run"]).unwrap();
         assert_eq!(options.file.as_deref(), Some(file));
         assert!(options.dry_run);
         assert_eq!(
@@ -88,7 +102,6 @@ fn option_like_filenames_are_values_not_consent_flags() {
                 &format!("--file={file}"),
                 "--dry-run"
             ])
-            .unwrap()
             .unwrap(),
             options
         );
@@ -104,7 +117,6 @@ fn duplicate_values_and_switches_are_never_overridden() {
         vec!["--file=other"],
         vec!["--confirm-lab"],
         vec!["--confirm-delete"],
-        vec!["--remount-snapshot"],
     ] {
         let mut args = vec![
             "delete",
@@ -116,324 +128,269 @@ fn duplicate_values_and_switches_are_never_overridden() {
             "--confirm-delete",
         ];
         args.extend(extra);
-        assert!(parse(&args).is_err(), "{args:?}");
+        assert_eq!(
+            parse(&args).unwrap_err().kind(),
+            ErrorKind::ArgumentConflict,
+            "{args:?}"
+        );
     }
-    assert!(
-        parse(&[
+    for args in [
+        vec![
             "delete",
             "--snapshot",
             "3",
             "--file",
             "target",
             "--dry-run",
-            "--dry-run"
-        ])
-        .is_err()
-    );
-    assert!(parse(&["--snapshot", "3", "inspect"]).is_err());
-}
-
-fn parse(arguments: &[&str]) -> Result<Option<Options>> {
-    parse_args(
-        &arguments
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-    )
+            "--dry-run",
+        ],
+        vec![
+            "create",
+            "--snapshot",
+            "3",
+            "--file",
+            "target",
+            "--source",
+            "first",
+            "--source",
+            "second",
+            "--dry-run",
+        ],
+        vec![
+            "read",
+            "--snapshot",
+            "3",
+            "--file",
+            "target",
+            "--output",
+            "first",
+            "--output",
+            "second",
+        ],
+    ] {
+        assert_eq!(
+            parse(&args).unwrap_err().kind(),
+            ErrorKind::ArgumentConflict,
+            "{args:?}"
+        );
+    }
 }
 
 #[test]
-fn help_and_debug_inspect_do_not_require_confirmation() {
-    assert_eq!(parse(&[]).unwrap(), None);
-    assert_eq!(parse(&["--help"]).unwrap(), None);
+fn clap_handles_help_version_and_missing_commands() {
+    for args in [
+        vec!["--help"],
+        vec!["-h"],
+        vec!["create", "--help"],
+        vec!["read", "-h"],
+        vec!["debug", "--help"],
+        vec!["debug", "-h"],
+        vec!["help", "debug", "inspect"],
+    ] {
+        assert_eq!(
+            parse(&args).unwrap_err().kind(),
+            ErrorKind::DisplayHelp,
+            "{args:?}"
+        );
+    }
+    assert_eq!(
+        parse(&["--version"]).unwrap_err().kind(),
+        ErrorKind::DisplayVersion
+    );
+    for args in [vec![], vec!["debug"]] {
+        let error = parse(&args).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+        assert_eq!(error.exit_code(), 2);
+    }
     assert_eq!(
         parse(&["debug", "inspect", "--snapshot", "42"]).unwrap(),
-        Some(Options {
+        Options {
             command: Command::Inspect,
             snapshot: NonZeroU32::new(42).unwrap(),
-            remount: false,
             file: None,
             source: None,
             output: None,
             dry_run: false,
-        })
+        }
     );
 }
 
 #[test]
-fn mutation_requires_confirmation() {
-    for command in ["probe", "restore-readonly"] {
-        assert!(parse(&[command, "--snapshot", "42"]).is_err());
-        assert!(parse(&[command, "--confirm-lab", "--snapshot", "42"]).is_err());
-        assert!(parse(&["debug", command, "--snapshot", "42"]).is_err());
-        assert!(parse(&["debug", command, "--confirm-lab", "--snapshot", "42",]).is_ok());
-    }
-}
-
-#[test]
-fn rejects_paths_invalid_numbers_and_duplicate_options() {
+fn typed_snapshot_and_path_validators_run_inside_clap() {
     for value in ["", "0", "-1", "+1", "4294967296", "C:", r"42\file", " 42"] {
         assert!(
-            parse(&["inspect", "--snapshot", value]).is_err(),
+            parse(&["debug", "inspect", "--snapshot", value]).is_err(),
             "{value:?}"
         );
+        let error = parse(&["debug", "inspect", &format!("--snapshot={value}")]).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            ErrorKind::ValueValidation,
+            "{value:?}: {error}"
+        );
+    }
+    for value in [
+        "",
+        r"..\outside",
+        r"C:\source",
+        r"dir\NUL",
+        "*.txt",
+        "bad\0path",
+    ] {
         assert!(
-            parse(&["inspect", &format!("--snapshot={value}")]).is_err(),
+            parse(&["read", "--snapshot", "3", "--file", value]).is_err(),
             "{value:?}"
         );
     }
-    assert!(parse(&["inspect", "--snapshot"]).is_err());
-    assert!(parse(&["inspect"]).is_err());
-    assert!(parse(&["inspect", "--snapshot", "1", "--snapshot", "2"]).is_err());
-    assert!(parse(&["probe", "--snapshot", "1", "--confirm-lab", "--confirm-lab"]).is_err());
-    assert!(parse(&["inspect", "--snapshot", "1", "--confirm-lab"]).is_err());
-    assert!(parse(&["delete", "--snapshot", "1"]).is_err());
+    for value in ["", "--confirm-lab", "bad\0path"] {
+        assert!(
+            parse(&[
+                "create",
+                "--snapshot",
+                "3",
+                "--file",
+                "target",
+                &format!("--source={value}"),
+                "--dry-run"
+            ])
+            .is_err()
+        );
+        assert!(
+            parse(&[
+                "read",
+                "--snapshot",
+                "3",
+                "--file",
+                "target",
+                &format!("--output={value}")
+            ])
+            .is_err()
+        );
+    }
 }
 
 #[test]
-fn lock_diagnosis_requires_file_and_lab_confirmation_and_rejects_mutation_flags() {
-    let base = [
+fn mutations_require_consent_but_never_an_explicit_remount_flag() {
+    for (name, command) in [("create", Command::Create), ("update", Command::Update)] {
+        for flag in ["--confirm-lab", "--dry-run"] {
+            let options = parse(&[
+                name,
+                "--snapshot=3",
+                r"--file=dir\data.bin",
+                "--source=input.bin",
+                flag,
+            ])
+            .unwrap();
+            assert_eq!(options.command, command);
+            assert_eq!(options.source.as_deref(), Some("input.bin"));
+            assert_eq!(options.dry_run, flag == "--dry-run");
+        }
+    }
+    for (name, command) in [
+        ("probe", Command::Probe),
+        ("restore-readonly", Command::RestoreReadonly),
+    ] {
+        assert_eq!(
+            parse(&["debug", name, "--snapshot", "3"])
+                .unwrap_err()
+                .kind(),
+            ErrorKind::MissingRequiredArgument
+        );
+        let options = parse(&["debug", name, "--snapshot", "3", "--confirm-lab"]).unwrap();
+        assert_eq!(options.command, command);
+    }
+    let options = parse(&[
+        "delete",
+        "--snapshot",
+        "3",
+        "--file",
+        "target",
+        "--confirm-lab",
+        "--confirm-delete",
+    ])
+    .unwrap();
+    assert_eq!(options.command, Command::Delete);
+    let diagnosis = parse(&[
         "debug",
         "diagnose-lock",
         "--snapshot",
         "3",
         "--file",
-        r"Windows\Update\rec\data.bat",
+        "target",
         "--confirm-lab",
-    ];
-    assert_eq!(
-        parse(&base).unwrap().unwrap().command,
-        Command::DiagnoseLock
-    );
-    assert!(parse(&base[..5]).is_err());
-    assert!(parse(&["diagnose-lock", "--snapshot", "3", "--confirm-lab"]).is_err());
-    for flag in [
-        "--dry-run",
-        "--confirm-delete",
-        "--remount-snapshot",
-        "--restore-attributes-only",
-    ] {
-        let mut args = base.to_vec();
-        args.push(flag);
-        assert!(parse(&args).is_err(), "{flag}");
-    }
+    ])
+    .unwrap();
+    assert_eq!(diagnosis.command, Command::DiagnoseLock);
+    let read = parse(&[
+        "read",
+        "--snapshot",
+        "3",
+        "--file",
+        "target",
+        "--output",
+        "export.bin",
+    ])
+    .unwrap();
+    assert_eq!(read.command, Command::Read);
+    assert_eq!(read.output.as_deref(), Some("export.bin"));
 }
 
 #[test]
-fn remount_compatibility_is_debug_only_and_not_allowed_on_inspect() {
-    for command in ["probe", "restore-readonly"] {
-        let args = [
-            "debug",
-            command,
-            "--snapshot",
-            "3",
-            "--confirm-lab",
-            "--remount-snapshot",
-        ];
-        assert!(parse(&args).unwrap().unwrap().remount);
-        assert!(parse(&[command, "--snapshot", "3", "--remount-snapshot"]).is_err());
-    }
-    assert!(parse(&["debug", "inspect", "--snapshot", "3", "--remount-snapshot"]).is_err());
-    assert!(
-        parse(&[
-            "debug",
-            "probe",
-            "--snapshot",
-            "3",
-            "--confirm-lab",
-            "--remount-snapshot",
-            "--remount-snapshot"
-        ])
-        .is_err()
-    );
-}
-
-#[test]
-fn deletion_requires_file_and_two_confirmations_or_a_nonmutating_preview() {
-    assert!(
-        parse(&[
-            "delete",
-            "--snapshot",
-            "3",
-            "--file",
-            r"Windows\test.txt",
-            "--dry-run"
-        ])
-        .unwrap()
-        .unwrap()
-        .dry_run
-    );
-    assert!(
-        parse(&[
-            "delete",
-            "--snapshot",
-            "3",
-            "--file",
-            "test.txt",
-            "--confirm-lab",
-            "--confirm-delete",
-        ])
-        .is_ok()
-    );
-    for flags in [
-        vec![],
-        vec!["--confirm-lab"],
-        vec!["--confirm-delete"],
-        vec!["--confirm-lab", "--confirm-delete", "--remount-snapshot"],
-        vec!["--dry-run", "--confirm-delete"],
-        vec!["--dry-run", "--remount-snapshot"],
-    ] {
-        let mut args = vec!["delete", "--snapshot", "3", "--file", "test.txt"];
-        args.extend(flags);
-        assert!(parse(&args).is_err());
-    }
-    assert!(
-        parse(&[
-            "delete",
-            "--snapshot",
-            "3",
-            "--confirm-lab",
-            "--confirm-delete"
-        ])
-        .is_err()
-    );
-    assert!(
-        parse(&[
-            "debug",
-            "probe",
-            "--snapshot",
-            "3",
-            "--confirm-lab",
-            "--file",
-            "test.txt"
-        ])
-        .is_err()
-    );
-    assert!(parse(&["debug", "inspect", "--snapshot", "3", "--dry-run"]).is_err());
-}
-
-#[test]
-fn crud_flags_enforce_source_output_and_confirmation_boundaries() {
-    for command in ["create", "update"] {
-        let base = [
-            command,
-            "--snapshot",
-            "3",
-            "--file",
-            r"dir\data.bin",
-            "--source",
-            "input.bin",
-        ];
-        assert!(parse(&base).is_err());
-        for flag in ["--confirm-lab", "--dry-run"] {
-            let mut args = base.to_vec();
-            args.push(flag);
-            let options = parse(&args).unwrap().unwrap();
-            assert_eq!(options.remount, flag == "--confirm-lab");
-            assert_eq!(options.dry_run, flag == "--dry-run");
-            assert_eq!(options.source.as_deref(), Some("input.bin"));
-            for extra in ["--confirm-delete", "--output", "--remount-snapshot", flag] {
-                let mut invalid = args.clone();
-                invalid.push(extra);
-                assert!(parse(&invalid).is_err(), "{invalid:?}");
-            }
-        }
-        assert!(parse(&base[..5]).is_err());
-        let mut invalid = base.to_vec();
-        invalid.extend(["--source", "second", "--confirm-lab"]);
-        assert!(parse(&invalid).is_err());
-        let mut invalid = base.to_vec();
-        invalid.extend(["--dry-run", "--confirm-lab"]);
-        assert!(parse(&invalid).is_err());
-    }
-    let read = ["read", "--snapshot", "3", "--file", "data.bin"];
-    assert!(!parse(&read).unwrap().unwrap().remount);
-    for flag in [
-        "--confirm-lab",
-        "--dry-run",
-        "--confirm-delete",
-        "--remount-snapshot",
-        "--source",
-    ] {
-        let mut args = read.to_vec();
-        args.push(flag);
-        assert!(parse(&args).is_err());
-    }
-    let mut args = read.to_vec();
-    args.extend(["--output", "export.bin"]);
-    assert_eq!(
-        parse(&args).unwrap().unwrap().output.as_deref(),
-        Some("export.bin")
-    );
-    args.extend(["--output", "second"]);
-    assert!(parse(&args).is_err());
-    assert!(parse(&["read", "--snapshot", "3"]).is_err());
-    for flag in ["--source", "--output"] {
-        for value in ["", "--confirm-lab", "bad\0path"] {
-            assert!(parse(&["read", "--snapshot", "3", "--file", "target", flag, value]).is_err());
-        }
-    }
-}
-
-#[test]
-fn maintenance_commands_and_help_use_the_debug_namespace() {
+fn clap_rejects_commands_outside_their_namespace() {
     for command in ["inspect", "probe", "diagnose-lock", "restore-readonly"] {
-        assert!(
-            parse(&[command, "--snapshot", "3"])
-                .unwrap_err()
-                .to_string()
-                .contains("debug subcommand")
+        assert_eq!(
+            parse(&[command, "--snapshot", "3"]).unwrap_err().kind(),
+            ErrorKind::InvalidSubcommand
         );
-        assert!(!HELP.contains(&format!("shadow-realm {command} ")));
-        assert!(DEBUG_HELP.contains(&format!("debug {command} ")));
     }
     for command in ["create", "read", "update", "delete"] {
-        assert!(
+        assert_eq!(
             parse(&["debug", command, "--snapshot", "3"])
                 .unwrap_err()
-                .to_string()
-                .contains("top-level")
+                .kind(),
+            ErrorKind::InvalidSubcommand
         );
-        assert!(!DEBUG_HELP.contains(&format!("shadow-realm {command} ")));
     }
     for args in [
-        vec!["--debug"],
-        vec!["--debug", "--help"],
-        vec!["--help", "--debug"],
         vec!["--debug", "inspect", "--snapshot", "3"],
-        vec!["inspect", "--snapshot", "3", "--debug"],
         vec!["debug", "inspect", "--snapshot", "3", "--debug"],
-        vec!["debug", "debug", "inspect", "--snapshot", "3"],
-        vec!["--help", "debug"],
         vec!["read", "--snapshot", "3", "--file", "target", "--debug"],
+        vec!["--snapshot", "3", "read"],
     ] {
-        assert!(parse(&args).is_err(), "{args:?}");
+        assert_eq!(
+            parse(&args).unwrap_err().kind(),
+            ErrorKind::UnknownArgument,
+            "{args:?}"
+        );
     }
-    for args in [vec!["debug"], vec!["debug", "--help"], vec!["debug", "-h"]] {
-        assert_eq!(parse(&args).unwrap(), None);
-    }
-    assert!(!HELP.contains("--remount-snapshot"));
 }
 
 #[test]
-fn removed_attribute_only_flag_is_rejected_with_an_explanation() {
+fn removed_transition_flags_are_not_accepted_by_any_command() {
     for command in [
-        "probe",
+        "create",
+        "read",
+        "update",
         "delete",
-        "restore-readonly",
         "inspect",
+        "probe",
+        "restore-readonly",
         "diagnose-lock",
     ] {
-        for remount in [false, true] {
-            let mut args = vec![command, "--snapshot", "3", "--restore-attributes-only"];
-            if remount {
-                args.push("--remount-snapshot");
+        for flag in ["--restore-attributes-only", "--remount-snapshot"] {
+            let mut args = vec![command, "--snapshot", "3", flag];
+            if matches!(
+                command,
+                "inspect" | "probe" | "restore-readonly" | "diagnose-lock"
+            ) {
+                args.insert(0, "debug");
             }
             let error = parse(&args).unwrap_err();
-            assert!(
-                format!("{error:#}").contains("removed after NTFS flush failures"),
-                "{error:#}"
-            );
+            assert_eq!(error.kind(), ErrorKind::UnknownArgument, "{args:?}");
+            assert!(error.to_string().contains(flag));
         }
     }
 }

@@ -1,5 +1,12 @@
 # Unreleased
 
+- Defined command hierarchy, option validation, consent constraints, and help
+  together in Clap. Removed manual help blocks and argument scanning; each
+  command now supports generated `--help`, with `--version` at the root.
+- Adopted standard Clap usage diagnostics and exit codes: missing commands
+  show help on stderr with exit code `2`; explicit help/version requests
+  return `0`. Invalid arguments use Clap diagnostics, while runtime errors
+  retain anyhow context and optional backtraces.
 - Added `create`, `read`, and `update` for individual snapshot-relative regular
   files. Create/update take binary-safe `--source` input; read emits raw stdout
   or creates a new `--output` file without remounting.
@@ -9,10 +16,13 @@
 - Moved `inspect`, `diagnose-lock`, `probe`, and `restore-readonly` under the
   `debug` subcommand; use `debug --help` for maintenance usage. CRUD stays
   top-level; `--debug` is not accepted.
-- `--remount-snapshot` is now redundant and accepted only by `debug probe`
-  and `debug restore-readonly`.
-  Remove it from normal deletion invocations. All mutations still use both
-  remount transitions; no attribute-only fallback was reintroduced.
+- Removed the no-op `--remount-snapshot` compatibility flag and obsolete
+  remount-selector state. Every mutation unconditionally uses both remount
+  transitions; there is no attribute-only path.
+- Removed boxed file-operation callbacks and duplicate probe write/verify code.
+  Probe cleanup still runs after file handles close, including on failure.
+- Consolidated Windows-only dispatch guards at the module boundary, preserving
+  the non-Windows CLI fallback.
 - Updated the demo to opt into debug inspection and use automatic remounting.
   New CRUD behavior has not been certified on live VSS snapshots.
 

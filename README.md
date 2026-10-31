@@ -122,10 +122,18 @@ subcommand; `debug --help` lists them:
 .\shadow-realm.exe debug restore-readonly --snapshot 42 --confirm-lab
 ```
 
+Clap generates usage, options, and help from the command definitions. Use
+`create --help`, `read --help`, `update --help`, `delete --help`, or
+`debug <command> --help` for command-specific flags. `help <command>` also
+works; `--version` prints the executable version. Missing commands (including
+bare `debug`) show help on stderr and return usage-error exit code `2`;
+explicit help and version requests return `0`.
+
 Lock diagnosis is not passive: it can flush caches and briefly exclude other
 access. Probe and read-only recovery also remount automatically.
-`--remount-snapshot` is a compatibility flag for `debug probe` and
-`debug restore-readonly`, not a requirement or a way to disable remounting.
+The redundant `--remount-snapshot` flag has been removed. Every mutation,
+including debug probing and recovery, always uses remount-based transitions;
+there is no switch to disable them.
 CRUD stays at the top level; `--debug` is not an accepted flag.
 Attribute-only transitions remain prohibited.
 
@@ -159,8 +167,9 @@ modules so they can exercise private internals without widening the public API.
 Prefer established, actively maintained crates over reimplementing platform
 APIs or general-purpose infrastructure. Evaluate maintenance, licensing, and
 compiler compatibility; enable only needed features and commit `Cargo.lock`.
-Microsoft's `windows-sys` supplies Win32 bindings, `clap` parses arguments,
-`anyhow` preserves error context/backtraces, and `tempfile` manages test fixtures.
+Microsoft's `windows-sys` supplies Win32 bindings; `clap` owns the command tree,
+argument constraints, typed validation, and generated help/version output.
+`anyhow` preserves runtime error context/backtraces, and `tempfile` manages test fixtures.
 Our code retains ownership, validation, snapshot policy, and explicit cleanup
 failure reporting.
 

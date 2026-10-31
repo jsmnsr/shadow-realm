@@ -148,8 +148,8 @@ function Show-Stage([string]$Name, [bool]$SourceTargetExpected, [bool]$SnapshotT
     $script:stages | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $script:run 'stages.json') -Encoding UTF8
 }
 
-$help = Invoke-Native $ToolPath @('--help') ''
-if ($help.ExitCode -ne 0 -or $help.Stdout -notmatch '^Shadow Realm 0\.4\.0-experimental\.1 --') {
+$version = Invoke-Native $ToolPath @('--version') ''
+if ($version.ExitCode -ne 0 -or $version.Stdout.Trim() -cnotmatch '^shadow-realm 0\.4\.0-experimental\.1$') {
     throw 'Use the matching v0.4.0-experimental.1 executable supplied with this demo.'
 }
 $parent = Join-Path $env:USERPROFILE 'ShadowRealmLab'

@@ -56,7 +56,7 @@ impl Volume for MockVolume {
 }
 
 fn execute(volume: &mut MockVolume, root: &Path, args: &[&str]) -> Result<()> {
-    let options = parse_args(&args.iter().map(ToString::to_string).collect::<Vec<_>>())?.unwrap();
+    let options = parse_args(&args.iter().map(ToString::to_string).collect::<Vec<_>>())?;
     run_file_command(volume, root.to_str().unwrap(), &options)
 }
 

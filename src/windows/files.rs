@@ -220,7 +220,7 @@ pub(crate) fn load_source(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn write_contents(file: &mut fs::File, bytes: &[u8]) -> Result<()> {
+pub(super) fn write_contents(file: &mut fs::File, bytes: &[u8]) -> Result<()> {
     file.write_all(bytes).context("Write contents")?;
     file.sync_all().context("Flush contents")?;
     file.seek(SeekFrom::Start(0))

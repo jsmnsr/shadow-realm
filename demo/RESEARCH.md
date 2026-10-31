@@ -26,7 +26,7 @@ Independently compare source and other-snapshot controls when experimenting.
 Attribute-only restoration was followed by NTFS transaction-log flush errors
 in the AIM-backed experiment. Shadow Realm therefore automatically remounts
 for every mutating command, including debug read-only recovery.
-`--remount-snapshot` is now a redundant debug-only compatibility flag.
+The redundant `--remount-snapshot` flag has been removed.
 The old `--restore-attributes-only` option is still rejected.
 
 Each transition locks the selected shadow device before dismounting and
