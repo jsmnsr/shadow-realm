@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [ValidateSet('x86_64-pc-windows-gnu', 'x86_64-pc-windows-msvc')]
-    [string]$Target = 'x86_64-pc-windows-msvc'
+    [string]$Target = 'x86_64-pc-windows-msvc',
+    [switch]$Offline
 )
 
 Set-StrictMode -Version Latest
@@ -27,10 +28,14 @@ try {
     }
     & cargo fmt --check
     if ($LASTEXITCODE -ne 0) { throw 'Formatting check failed.' }
+    $fetch = @('fetch', '--locked', '--target', $Target)
+    if ($Offline) { $fetch += '--offline' }
+    & cargo @fetch
+    if ($LASTEXITCODE -ne 0) { throw 'Dependency fetch failed; offline verification requires a populated Cargo cache.' }
     & cargo clippy --locked --offline --target $Target --all-targets -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw 'Clippy failed; install the matching toolchain component if missing.' }
     & cargo test --locked --offline --target $Target
-    if ($LASTEXITCODE -ne 0) { throw 'Windows unit tests failed.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Windows Rust tests failed.' }
     & cargo build --release --locked --offline --target $Target
     if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed.' }
     $executable = Join-Path $root "target\$Target\release\shadow-realm.exe"
@@ -61,7 +66,12 @@ try {
     }
     $metadata = & cargo metadata --locked --offline --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed.' }
-    $version = ($metadata | ConvertFrom-Json).packages[0].version
+    $package = ($metadata | ConvertFrom-Json).packages[0]
+    $version = $package.version
+    if ($package.license -cne 'MIT' -or
+        !(Test-Path -LiteralPath (Join-Path $root 'LICENSE') -PathType Leaf)) {
+        throw 'MIT package metadata and the distributed LICENSE file are required.'
+    }
     if ($help[0] -cne "Shadow Realm $version -- DISPOSABLE WINDOWS VM ONLY") {
         throw 'Executable version/help mismatch.'
     }

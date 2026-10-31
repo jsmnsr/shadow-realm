@@ -19,8 +19,9 @@ volume. Shadow Realm works with an existing shadow copy to:
   read-only attributes, including after an operation fails.
 - Preview mutations with `--dry-run`; access low-level maintenance under `debug`.
 
-The utility is written in Rust with no external crate dependencies. It does
-not create disks or snapshots; the optional [demo](demo/README.md) does that.
+The utility is written in Rust and uses Microsoft's `windows-sys` bindings for
+Windows APIs. It does not create disks or snapshots; the optional
+[demo](demo/README.md) does that.
 
 ## Why
 
@@ -41,13 +42,13 @@ Install Rust 1.85+ and the Visual Studio Windows x64 C++ build tools, then run
 from the repository root:
 
 ```powershell
-cargo build --release --locked --offline --target x86_64-pc-windows-msvc
+cargo build --release --locked --target x86_64-pc-windows-msvc
 .\target\x86_64-pc-windows-msvc\release\shadow-realm.exe --help
 ```
 
 Alternatively, use `shadow-realm.exe` from an extracted release. Release
 binaries are unsigned; compare the ZIP's SHA-256 hash with its accompanying
-`SHA256SUMS.txt`. No open-source license has been granted.
+`SHA256SUMS.txt`.
 
 ### Select and preview
 
@@ -144,7 +145,33 @@ Exit codes are `0` for success, `1` for operational failure, and `2` for invalid
 arguments. Reboot/detach persistence and general snapshot compatibility remain
 unestablished.
 
-Development: `scripts\Test.ps1` runs offline verification without live VSS
-operations. `scripts\Package.ps1` creates the release ZIP from a clean committed
-checkout using Rust 1.99.1. See [release notes](RELEASE-NOTES.md) for compatibility
-changes.
+## Development
+
+We follow the [Microsoft Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/).
+Small, crate-private modules separate CLI parsing, path validation, snapshot
+policy, and Windows adapters. Unsafe code is limited to documented Win32
+boundaries; policy and parsing forbid it.
+
+All Rust tests live under `tests\`: `cli.rs` exercises the executable, while
+`unit\` mirrors the source modules. Unit tests are linked as test-only child
+modules so they can exercise private internals without widening the public API.
+
+Prefer established, actively maintained crates over reimplementing platform
+APIs or general-purpose infrastructure. Evaluate maintenance, licensing, and
+compiler compatibility; enable only needed features and commit `Cargo.lock`.
+Microsoft's `windows-sys` supplies Win32 bindings, `clap` parses arguments,
+`anyhow` preserves error context/backtraces, and `tempfile` manages test fixtures.
+Our code retains ownership, validation, snapshot policy, and explicit cleanup
+failure reporting.
+
+`scripts\Test.ps1` fetches locked dependencies, then verifies the utility without
+live VSS operations. `scripts\Package.ps1` creates the release ZIP from a clean
+committed checkout using Rust 1.99.1. Both accept `-Offline` when the dependencies
+are already cached. For a manual offline build, first run
+`cargo fetch --locked --target x86_64-pc-windows-msvc`, then add `--offline` to
+the build command. See [release notes](RELEASE-NOTES.md) for compatibility changes.
+
+## License
+
+[MIT](LICENSE). The license does not change the experimental safety limits above.
+Dependency licenses are included in [third-party notices](THIRD-PARTY-NOTICES.md).
