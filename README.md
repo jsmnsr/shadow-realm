@@ -110,6 +110,10 @@ Small, crate-private modules separate CLI parsing, path validation, snapshot
 policy, and Windows adapters. Unsafe code is limited to documented Win32
 boundaries; policy and parsing forbid it.
 
+All Rust tests live under `tests\`: `cli.rs` exercises the executable, while
+`unit\` mirrors the source modules. Unit tests are linked as test-only child
+modules so they can exercise private internals without widening the public API.
+
 Prefer established, actively maintained crates over reimplementing platform
 APIs or general-purpose infrastructure. Evaluate maintenance, licensing, and
 compiler compatibility; enable only needed features and commit `Cargo.lock`.

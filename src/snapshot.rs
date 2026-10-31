@@ -264,4 +264,5 @@ pub(crate) fn restore_readonly<V: Volume>(volume: &mut V, remount: bool) -> Resu
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/snapshot.rs"]
 mod tests;

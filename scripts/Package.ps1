@@ -81,10 +81,13 @@ try {
         'Cargo.toml', 'Cargo.lock', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'README.md', 'RELEASE-NOTES.md',
         'demo\README.md', 'demo\RESEARCH.md', 'demo\Invoke-ShadowRealmDemo.ps1',
         'src\main.rs', 'src\app.rs', 'src\cli.rs', 'src\error.rs',
-        'src\paths.rs', 'src\snapshot.rs', 'src\snapshot\tests.rs', 'src\windows\mod.rs',
+        'src\paths.rs', 'src\snapshot.rs', 'src\windows\mod.rs',
         'src\windows\handles.rs', 'src\windows\volume.rs',
         'src\windows\deletion.rs', 'src\windows\marker.rs',
         'tests\cli.rs',
+        'tests\unit\cli.rs', 'tests\unit\error.rs', 'tests\unit\paths.rs', 'tests\unit\snapshot.rs',
+        'tests\unit\windows\deletion.rs', 'tests\unit\windows\handles.rs',
+        'tests\unit\windows\marker.rs', 'tests\unit\windows\volume.rs',
         'scripts\Test.ps1', 'scripts\Package.ps1'
     )
     $rustSources = @(Get-ChildItem -LiteralPath (Join-Path $root 'src'), (Join-Path $root 'tests') -Filter '*.rs' -File -Recurse |
