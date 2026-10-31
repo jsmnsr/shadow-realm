@@ -90,7 +90,7 @@ function Assert-LabDisk {
 }
 
 function Assert-ReadOnly([string]$LogName) {
-    $result = Invoke-Native $ToolPath @('inspect', '--snapshot', [string]$script:number) $LogName
+    $result = Invoke-Native $ToolPath @('debug', 'inspect', '--snapshot', [string]$script:number) $LogName
     $lines = @($result.Stdout -split '\r?\n')
     if ($result.ExitCode -ne 0 -or $lines -notcontains 'GPT attributes: 0xf000000000000000' -or
         $lines -notcontains 'READ_ONLY: true' -or $lines -notcontains 'Driver writable status: false') {
@@ -262,8 +262,8 @@ try {
     }
     Write-Host 'Do not open SnapshotView in Explorer until this step finishes.'
     $started = Get-Date
-    $deletion = Invoke-Native $ToolPath @('delete', '--snapshot', [string]$number, '--file', 'Demo\delete-me.txt', '--confirm-lab', '--confirm-delete', '--remount-snapshot') 'snapshot-deletion'
-    $state = Invoke-Native $ToolPath @('inspect', '--snapshot', [string]$number) 'post-command-inspection'
+    $deletion = Invoke-Native $ToolPath @('delete', '--snapshot', [string]$number, '--file', 'Demo\delete-me.txt', '--confirm-lab', '--confirm-delete') 'snapshot-deletion'
+    $state = Invoke-Native $ToolPath @('debug', 'inspect', '--snapshot', [string]$number) 'post-command-inspection'
     if ($deletion.ExitCode -ne 0 -or $state.ExitCode -ne 0) {
         throw 'Snapshot deletion/restoration failed. Stop; preserve the logs. No retry, force-dismount, or attribute-only fallback was attempted.'
     }

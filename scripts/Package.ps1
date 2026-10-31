@@ -63,7 +63,7 @@ try {
     $files = @(
         'Cargo.toml', 'Cargo.lock', 'README.md', 'RELEASE-NOTES.md',
         'demo\README.md', 'demo\RESEARCH.md', 'demo\Invoke-ShadowRealmDemo.ps1',
-        'src\main.rs', 'src\windows.rs', 'src\deletion.rs',
+        'src\main.rs', 'src\windows.rs', 'src\files.rs',
         'scripts\Test.ps1', 'scripts\Package.ps1'
     )
     $entries = [ordered]@{}

@@ -2,7 +2,7 @@ use std::env;
 use std::process::ExitCode;
 
 #[cfg(windows)]
-mod deletion;
+mod files;
 #[cfg(windows)]
 mod windows;
 
@@ -20,28 +20,23 @@ Shadow Realm ",
     env!("CARGO_PKG_VERSION"),
     " -- DISPOSABLE WINDOWS VM ONLY
 
-  shadow-realm inspect --snapshot NUMBER
-  shadow-realm diagnose-lock --snapshot NUMBER --file RELATIVE_PATH --confirm-lab
-  shadow-realm probe --snapshot NUMBER --confirm-lab --remount-snapshot
-  shadow-realm restore-readonly --snapshot NUMBER --confirm-lab --remount-snapshot
+  shadow-realm create --snapshot NUMBER --file RELATIVE_PATH --source LOCAL_FILE --confirm-lab
+  shadow-realm read --snapshot NUMBER --file RELATIVE_PATH [--output LOCAL_FILE]
+  shadow-realm update --snapshot NUMBER --file RELATIVE_PATH --source LOCAL_FILE --confirm-lab
   shadow-realm delete --snapshot NUMBER --file RELATIVE_PATH --dry-run
   shadow-realm delete --snapshot NUMBER --file RELATIVE_PATH --confirm-lab --confirm-delete
-                       --remount-snapshot
 
-inspect: query attributes and the driver's writable status; no mutations.
-diagnose-lock: compare lock/unlock before and after previewing an existing file.
-               No attribute changes, dismounts, or deletion. Locking can flush
-               filesystem caches and briefly excludes other access.
-probe: temporarily request writable attributes, create/read/delete one unique
-       test file in the snapshot root, then restore the original attributes.
-restore-readonly: recovery action; set READ_ONLY while preserving other attributes.
-delete: remove exactly one existing regular-file name inside the selected snapshot.
-        Requires --file and either --dry-run or BOTH confirmations. No wildcards.
---remount-snapshot: lock and dismount ONLY the selected shadow device around
-                   each attribute change, then close/reopen its handle.
-                   Never force-dismount a busy snapshot; lock failure stops it.
-                   Required for all mutations, including read-only recovery.
-Attribute-only restoration was removed after lab NTFS flush failures.
+create: create one new regular file; existing files are never overwritten.
+read: copy exact bytes to stdout, or create a new --output file. No remount.
+update: replace an existing regular file's contents with bytes from --source.
+delete: remove exactly one existing regular-file name. Requires --confirm-delete.
+--source: local regular file, buffered in memory before any remount.
+--dry-run: preview create/update/delete without changing the snapshot; no confirmations.
+Parents must already exist. No wildcards, traversal, reparse points, or permission bypass.
+Updates reject multiple hard links to avoid changing other names.
+Mutations automatically lock/remount writable, operate, then remount read-only.
+Busy snapshots are never force-dismounted. Restoration is not rollback.
+Use debug --help for low-level inspection, diagnosis, probing, and recovery.
 
 NUMBER is the numeric suffix of HarddiskVolumeShadowCopyNUMBER, NOT a VSS GUID.
 Only exact shadow-device targets are accepted; source disks and paths are not.
@@ -53,11 +48,35 @@ power loss, a crash, or a driver error. File cleanup is not a full rollback.
 "
 );
 
+const DEBUG_HELP: &str = "\
+Shadow Realm debug commands -- DISPOSABLE WINDOWS VM ONLY
+
+  shadow-realm debug inspect --snapshot NUMBER
+  shadow-realm debug diagnose-lock --snapshot NUMBER --file RELATIVE_PATH --confirm-lab
+  shadow-realm debug probe --snapshot NUMBER --confirm-lab
+  shadow-realm debug restore-readonly --snapshot NUMBER --confirm-lab
+
+inspect: query attributes and the driver's writable status; no mutations.
+diagnose-lock: compare lock/unlock before and after previewing an existing file.
+               No attribute changes, dismounts, or deletion. Locking can flush
+               filesystem caches and briefly excludes other access.
+probe: temporarily request writable attributes, create/read/delete one unique
+       test file in the snapshot root, then restore the original attributes.
+restore-readonly: recovery action; set READ_ONLY while preserving other attributes.
+--remount-snapshot: debug-only compatibility flag; mutations already remount.
+Attribute-only restoration was removed after lab NTFS flush failures.
+Busy snapshots are never force-dismounted. Restoration is best-effort, not rollback.
+Run elevated in a disposable VM; never use production snapshots.
+";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command {
     Inspect,
     Probe,
     RestoreReadonly,
+    Create,
+    Read,
+    Update,
     Delete,
     DiagnoseLock,
 }
@@ -68,17 +87,30 @@ struct Options {
     snapshot: u32,
     remount: bool,
     file: Option<String>,
+    source: Option<String>,
+    output: Option<String>,
     dry_run: bool,
 }
 
 fn parse_args(args: &[String]) -> Result<Option<Options>> {
-    if args.is_empty() || args == ["--help"] || args == ["-h"] {
+    if args.is_empty()
+        || args == ["--help"]
+        || args == ["-h"]
+        || args == ["debug"]
+        || args == ["debug", "--help"]
+        || args == ["debug", "-h"]
+    {
         return Ok(None);
     }
-    let command = match args[0].as_str() {
+    let debug = args[0] == "debug";
+    let command_index = usize::from(debug);
+    let command = match args[command_index].as_str() {
         "inspect" => Command::Inspect,
         "probe" => Command::Probe,
         "restore-readonly" => Command::RestoreReadonly,
+        "create" => Command::Create,
+        "read" => Command::Read,
+        "update" => Command::Update,
         "delete" => Command::Delete,
         "diagnose-lock" => Command::DiagnoseLock,
         other => return Err(format!("Unknown command: {other}")),
@@ -87,9 +119,11 @@ fn parse_args(args: &[String]) -> Result<Option<Options>> {
     let mut confirmed = false;
     let mut remount = false;
     let mut file = None;
+    let mut source = None;
+    let mut output = None;
     let mut dry_run = false;
     let mut confirm_delete = false;
-    let mut index = 1;
+    let mut index = command_index + 1;
     while index < args.len() {
         match args[index].as_str() {
             "--snapshot" => {
@@ -112,13 +146,32 @@ fn parse_args(args: &[String]) -> Result<Option<Options>> {
             "--confirm-lab" if !confirmed => confirmed = true,
             "--remount-snapshot" if !remount => remount = true,
             "--restore-attributes-only" => {
-                return Err("--restore-attributes-only was removed after NTFS flush failures. Attribute flags alone do not establish clean filesystem recovery. Use --remount-snapshot; if restoration fails, revert the disposable VM checkpoint.".into());
+                return Err("--restore-attributes-only was removed after NTFS flush failures. Attribute flags alone do not establish clean filesystem recovery. Mutations now remount automatically; if restoration fails, revert the disposable VM checkpoint.".into());
             }
             "--file" if file.is_none() => {
                 index += 1;
                 let value = args.get(index).ok_or("--file requires a relative path")?;
                 validate_relative_file(value)?;
                 file = Some(value.clone());
+            }
+            "--source" | "--output" => {
+                let flag = &args[index];
+                let slot = if flag == "--source" {
+                    &mut source
+                } else {
+                    &mut output
+                };
+                if slot.is_some() {
+                    return Err(format!("{flag} may only be specified once"));
+                }
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| format!("{flag} requires a local path"))?;
+                if value.is_empty() || value.starts_with("--") || value.contains('\0') {
+                    return Err(format!("{flag} requires a nonempty local path"));
+                }
+                *slot = Some(value.clone());
             }
             "--dry-run" if !dry_run => dry_run = true,
             "--confirm-delete" if !confirm_delete => confirm_delete = true,
@@ -127,49 +180,78 @@ fn parse_args(args: &[String]) -> Result<Option<Options>> {
         index += 1;
     }
     let snapshot = snapshot.ok_or("--snapshot is required")?;
-    if command == Command::Delete {
+    let maintenance = matches!(
+        command,
+        Command::Inspect | Command::Probe | Command::RestoreReadonly | Command::DiagnoseLock
+    );
+    if maintenance && !debug {
+        return Err(
+            "This maintenance command requires the debug subcommand; use debug --help".into(),
+        );
+    }
+    if debug && !maintenance {
+        return Err("CRUD commands are top-level; do not prefix them with debug".into());
+    }
+    if remount && !debug {
+        return Err("--remount-snapshot is debug-only and no longer needed; mutations remount automatically".into());
+    }
+    let mutation = matches!(command, Command::Create | Command::Update | Command::Delete);
+    if mutation {
         if file.is_none() {
-            return Err("delete requires --file with a snapshot-relative path".into());
+            return Err("create/update/delete require --file with a snapshot-relative path".into());
         }
         if dry_run && (confirmed || confirm_delete || remount) {
             return Err("--dry-run cannot be combined with mutation or confirmation flags".into());
         }
-        if !dry_run && !confirm_delete {
+        if command == Command::Delete && !dry_run && !confirm_delete {
             return Err(
                 "Deletion requires --confirm-delete; use --dry-run to preview the target".into(),
             );
         }
-    } else if command == Command::DiagnoseLock {
+    } else if matches!(command, Command::Read | Command::DiagnoseLock) {
         if file.is_none() {
-            return Err("diagnose-lock requires --file with a snapshot-relative path".into());
+            return Err("read/diagnose-lock require --file with a snapshot-relative path".into());
         }
         if dry_run || confirm_delete || remount {
-            return Err("diagnose-lock does not accept deletion, dry-run, or remount flags".into());
+            return Err(
+                "read/diagnose-lock do not accept deletion, dry-run, or remount flags".into(),
+            );
         }
     } else if file.is_some() || dry_run || confirm_delete {
-        return Err("--file requires delete/diagnose-lock; deletion flags require delete".into());
+        return Err(
+            "--file requires a file operation or diagnose-lock; --dry-run requires a mutation"
+                .into(),
+        );
     }
-    if matches!(
-        command,
-        Command::Probe | Command::RestoreReadonly | Command::Delete
-    ) && !dry_run
-        && !remount
-    {
-        return Err("Mutations require --remount-snapshot. Attribute-only transitions are no longer supported after lab NTFS flush failures.".into());
+    if confirm_delete && command != Command::Delete {
+        return Err("--confirm-delete requires delete".into());
     }
-    if command != Command::Inspect && !dry_run && !confirmed {
+    if matches!(command, Command::Create | Command::Update) {
+        if source.is_none() {
+            return Err("create/update require --source with a local regular file".into());
+        }
+    } else if source.is_some() {
+        return Err("--source requires create or update".into());
+    }
+    if output.is_some() && command != Command::Read {
+        return Err("--output requires read".into());
+    }
+    if !matches!(command, Command::Inspect | Command::Read) && !dry_run && !confirmed {
         return Err(
             "Mutation and locking commands require --confirm-lab; use a disposable VM".into(),
         );
     }
-    if command == Command::Inspect && (confirmed || remount) {
-        return Err("inspect does not use --confirm-lab or --remount-snapshot".into());
+    if matches!(command, Command::Inspect | Command::Read) && (confirmed || remount) {
+        return Err("inspect/read do not use --confirm-lab or --remount-snapshot".into());
     }
     Ok(Some(Options {
         command,
         snapshot,
-        remount,
+        remount: !dry_run
+            && (mutation || matches!(command, Command::Probe | Command::RestoreReadonly)),
         file,
+        source,
+        output,
         dry_run,
     }))
 }
@@ -404,7 +486,7 @@ impl<V: Volume> Drop for RestoreGuard<'_, V> {
             if let Err(error) = self.restore() {
                 eprintln!("RESTORATION FAILED during unwinding: {error}");
                 eprintln!(
-                    "Use restore-readonly on this snapshot or revert the disposable VM checkpoint."
+                    "Use debug restore-readonly on this snapshot or revert the disposable VM checkpoint."
                 );
             }
         }
@@ -423,7 +505,7 @@ fn with_writable_snapshot<V: Volume>(
     check_snapshot_attributes(original)?;
     if original & READ_ONLY == 0 {
         return Err(
-            "Snapshot is already writable; refusing operation. Use restore-readonly if appropriate."
+            "Snapshot is already writable; refusing operation. Use debug restore-readonly if appropriate."
                 .into(),
         );
     }
@@ -459,7 +541,7 @@ fn with_writable_snapshot<V: Volume>(
     combine(
         operation,
         restoration,
-        "RESTORATION FAILED; snapshot state is uncertain. Use restore-readonly or revert the VM checkpoint",
+        "RESTORATION FAILED; snapshot state is uncertain. Use debug restore-readonly or revert the VM checkpoint",
     )
 }
 
@@ -481,9 +563,60 @@ fn restore_readonly<V: Volume>(volume: &mut V, remount: bool) -> Result<()> {
 }
 
 #[cfg(windows)]
+fn run_file_command<V: Volume>(volume: &mut V, path: &str, options: &Options) -> Result<()> {
+    use std::path::Path;
+
+    check_snapshot_attributes(volume.attributes()?)?;
+    let relative = options
+        .file
+        .as_deref()
+        .ok_or("File commands require --file")?;
+    if options.command == Command::Read {
+        return files::read_file(path, relative, options.output.as_deref().map(Path::new));
+    }
+    let source = options
+        .source
+        .as_deref()
+        .map(|source| -> Result<Vec<u8>> {
+            let bytes = files::load_source(Path::new(source))?;
+            println!("Source: {source} ({} bytes)", bytes.len());
+            Ok(bytes)
+        })
+        .transpose()?;
+    let action: Box<dyn FnOnce() -> Result<()> + '_> = match options.command {
+        Command::Create => {
+            let expected = files::preview_create(path, relative)?;
+            let bytes = source.ok_or("create requires --source")?;
+            Box::new(move || files::create_file(path, relative, &expected, &bytes))
+        }
+        Command::Update => {
+            let expected = files::preview_update(path, relative)?;
+            let bytes = source.ok_or("update requires --source")?;
+            Box::new(move || files::update_file(path, relative, &expected, &bytes))
+        }
+        Command::Delete => {
+            let expected = files::preview(path, relative)?;
+            Box::new(move || files::delete_file(path, relative, &expected))
+        }
+        _ => return Err("Not a file command".into()),
+    };
+    if options.dry_run {
+        println!("DRY RUN: no attributes or file contents changed.");
+        return Ok(());
+    }
+    with_writable_snapshot(volume, options.remount, action)?;
+    println!("File operation completed; original read-only driver attributes restored. This is not rollback or proof of filesystem integrity.");
+    Ok(())
+}
+
+#[cfg(windows)]
 fn run(options: Options) -> Result<()> {
     let path = snapshot_path(options.snapshot);
-    println!("Target: {path}");
+    if options.command == Command::Read {
+        eprintln!("Target: {path}");
+    } else {
+        println!("Target: {path}");
+    }
     let mut volume = windows::SnapshotVolume::open(&path)?;
     match options.command {
         Command::Inspect => {
@@ -509,23 +642,10 @@ fn run(options: Options) -> Result<()> {
                 .file
                 .as_deref()
                 .ok_or("diagnose-lock requires --file")?;
-            diagnose_lock(&mut volume, || {
-                deletion::preview(&path, relative).map(|_| ())
-            })
+            diagnose_lock(&mut volume, || files::preview(&path, relative).map(|_| ()))
         }
-        Command::Delete => {
-            check_snapshot_attributes(volume.attributes()?)?;
-            let relative = options.file.as_deref().ok_or("delete requires --file")?;
-            let expected = deletion::preview(&path, relative)?;
-            if options.dry_run {
-                println!("DRY RUN: no attributes changed and no file deleted.");
-                return Ok(());
-            }
-            with_writable_snapshot(&mut volume, options.remount, || {
-                deletion::delete_file(&path, relative, &expected)
-            })?;
-            println!("Selected file name deleted; original driver attributes restored. This does not restore file contents or filesystem metadata.");
-            Ok(())
+        Command::Create | Command::Read | Command::Update | Command::Delete => {
+            run_file_command(&mut volume, &path, &options)
         }
     }
 }
@@ -540,11 +660,20 @@ fn main() -> ExitCode {
     let options = match parse_args(&args) {
         Ok(Some(options)) => options,
         Ok(None) => {
-            print!("{HELP}");
+            if args.first().is_some_and(|arg| arg == "debug") {
+                print!("{DEBUG_HELP}");
+            } else {
+                print!("{HELP}");
+            }
             return ExitCode::SUCCESS;
         }
         Err(error) => {
-            eprintln!("{error}\nUse --help for usage.");
+            let help = if args.first().is_some_and(|arg| arg == "debug") {
+                "debug --help"
+            } else {
+                "--help"
+            };
+            eprintln!("{error}\nUse {help} for usage.");
             return ExitCode::from(2);
         }
     };
@@ -580,16 +709,18 @@ mod tests {
     }
 
     #[test]
-    fn help_and_inspect_do_not_require_confirmation() {
+    fn help_and_debug_inspect_do_not_require_confirmation() {
         assert_eq!(parse(&[]).unwrap(), None);
         assert_eq!(parse(&["--help"]).unwrap(), None);
         assert_eq!(
-            parse(&["inspect", "--snapshot", "42"]).unwrap(),
+            parse(&["debug", "inspect", "--snapshot", "42"]).unwrap(),
             Some(Options {
                 command: Command::Inspect,
                 snapshot: 42,
                 remount: false,
                 file: None,
+                source: None,
+                output: None,
                 dry_run: false,
             })
         );
@@ -600,14 +731,8 @@ mod tests {
         for command in ["probe", "restore-readonly"] {
             assert!(parse(&[command, "--snapshot", "42"]).is_err());
             assert!(parse(&[command, "--confirm-lab", "--snapshot", "42"]).is_err());
-            assert!(parse(&[
-                command,
-                "--confirm-lab",
-                "--snapshot",
-                "42",
-                "--remount-snapshot"
-            ])
-            .is_ok());
+            assert!(parse(&["debug", command, "--snapshot", "42"]).is_err());
+            assert!(parse(&["debug", command, "--confirm-lab", "--snapshot", "42"]).is_ok());
         }
     }
 
@@ -638,6 +763,7 @@ mod tests {
     #[test]
     fn lock_diagnosis_requires_file_and_lab_confirmation_and_rejects_mutation_flags() {
         let base = [
+            "debug",
             "diagnose-lock",
             "--snapshot",
             "3",
@@ -1030,9 +1156,10 @@ mod tests {
     }
 
     #[test]
-    fn remount_is_explicit_and_not_allowed_on_inspect() {
+    fn remount_compatibility_flag_is_debug_only_and_not_allowed_on_inspect() {
         for command in ["probe", "restore-readonly"] {
             let args = [
+                "debug",
                 command,
                 "--snapshot",
                 "3",
@@ -1040,10 +1167,11 @@ mod tests {
                 "--remount-snapshot",
             ];
             assert!(parse(&args).unwrap().unwrap().remount);
-            assert!(parse(&[command, "--snapshot", "3", "--remount-snapshot"]).is_err());
+            assert!(parse(&args[1..]).is_err());
         }
-        assert!(parse(&["inspect", "--snapshot", "3", "--remount-snapshot"]).is_err());
+        assert!(parse(&["debug", "inspect", "--snapshot", "3", "--remount-snapshot"]).is_err());
         assert!(parse(&[
+            "debug",
             "probe",
             "--snapshot",
             "3",
@@ -1244,14 +1372,13 @@ mod tests {
             "test.txt",
             "--confirm-lab",
             "--confirm-delete",
-            "--remount-snapshot"
         ])
         .is_ok());
         for flags in [
             vec![],
             vec!["--confirm-lab"],
             vec!["--confirm-delete"],
-            vec!["--confirm-lab", "--confirm-delete"],
+            vec!["--confirm-lab", "--confirm-delete", "--remount-snapshot"],
             vec!["--dry-run", "--confirm-delete"],
             vec!["--dry-run", "--remount-snapshot"],
         ] {
@@ -1277,6 +1404,245 @@ mod tests {
         ])
         .is_err());
         assert!(parse(&["inspect", "--snapshot", "3", "--dry-run"]).is_err());
+    }
+
+    #[test]
+    fn crud_flags_enforce_source_output_and_confirmation_boundaries() {
+        for command in ["create", "update"] {
+            let base = [
+                command,
+                "--snapshot",
+                "3",
+                "--file",
+                r"dir\data.bin",
+                "--source",
+                "input.bin",
+            ];
+            assert!(parse(&base).is_err());
+            for flag in ["--confirm-lab", "--dry-run"] {
+                let mut args = base.to_vec();
+                args.push(flag);
+                let options = parse(&args).unwrap().unwrap();
+                assert_eq!(options.remount, flag == "--confirm-lab");
+                assert_eq!(options.dry_run, flag == "--dry-run");
+                assert_eq!(options.source.as_deref(), Some("input.bin"));
+                for extra in ["--confirm-delete", "--output", "--remount-snapshot", flag] {
+                    let mut invalid = args.clone();
+                    invalid.push(extra);
+                    assert!(parse(&invalid).is_err(), "{invalid:?}");
+                }
+            }
+            assert!(parse(&base[..5]).is_err());
+            let mut invalid = base.to_vec();
+            invalid.extend(["--source", "second", "--confirm-lab"]);
+            assert!(parse(&invalid).is_err());
+            let mut invalid = base.to_vec();
+            invalid.extend(["--dry-run", "--confirm-lab"]);
+            assert!(parse(&invalid).is_err());
+        }
+        let read = ["read", "--snapshot", "3", "--file", "data.bin"];
+        let options = parse(&read).unwrap().unwrap();
+        assert!(!options.remount);
+        for flag in [
+            "--confirm-lab",
+            "--dry-run",
+            "--confirm-delete",
+            "--remount-snapshot",
+            "--source",
+        ] {
+            let mut args = read.to_vec();
+            args.push(flag);
+            assert!(parse(&args).is_err());
+        }
+        let mut args = read.to_vec();
+        args.extend(["--output", "export.bin"]);
+        assert_eq!(
+            parse(&args).unwrap().unwrap().output.as_deref(),
+            Some("export.bin")
+        );
+        args.extend(["--output", "second"]);
+        assert!(parse(&args).is_err());
+        assert!(parse(&["read", "--snapshot", "3"]).is_err());
+        for flag in ["--source", "--output"] {
+            for value in ["", "--confirm-lab", "bad\0path"] {
+                assert!(
+                    parse(&["read", "--snapshot", "3", "--file", "target", flag, value]).is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn maintenance_commands_and_help_use_the_debug_namespace() {
+        for command in ["inspect", "probe", "diagnose-lock", "restore-readonly"] {
+            assert!(parse(&[command, "--snapshot", "3"])
+                .unwrap_err()
+                .contains("debug subcommand"));
+            assert!(!HELP.contains(&format!("shadow-realm {command} ")));
+            assert!(DEBUG_HELP.contains(&format!("debug {command} ")));
+        }
+        for command in ["create", "read", "update", "delete"] {
+            assert!(parse(&["debug", command, "--snapshot", "3"])
+                .unwrap_err()
+                .contains("top-level"));
+            assert!(!DEBUG_HELP.contains(&format!("shadow-realm {command} ")));
+        }
+        for args in [
+            vec!["--debug"],
+            vec!["--debug", "--help"],
+            vec!["--help", "--debug"],
+            vec!["--debug", "inspect", "--snapshot", "3"],
+            vec!["inspect", "--snapshot", "3", "--debug"],
+            vec!["debug", "inspect", "--snapshot", "3", "--debug"],
+            vec!["debug", "debug", "inspect", "--snapshot", "3"],
+            vec!["--help", "debug"],
+            vec!["read", "--snapshot", "3", "--file", "target", "--debug"],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
+        }
+        assert!(parse(&["--debug", "inspect", "--snapshot", "3", "--debug"]).is_err());
+        assert_eq!(parse(&["debug"]).unwrap(), None);
+        assert_eq!(parse(&["debug", "--help"]).unwrap(), None);
+        assert_eq!(parse(&["debug", "-h"]).unwrap(), None);
+        assert!(!HELP.contains("--remount-snapshot"));
+        let options = parse(&["read", "--snapshot", "3", "--file", "--debug"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(options.file.as_deref(), Some("--debug"));
+        assert!(parse(&[
+            "read",
+            "--snapshot",
+            "3",
+            "--file",
+            "--debug",
+            "different-file"
+        ])
+        .is_err());
+        assert!(parse(&["--debug", "--help", "--debug"]).is_err());
+        let options = parse(&["read", "--snapshot", "3", "--file", "debug"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(options.file.as_deref(), Some("debug"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn crud_dispatch_remounts_only_mutations_and_preserves_read_bytes() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            env::temp_dir().join(format!("shadow-realm-crud-{}-{nonce}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        let output = root.join("output");
+        fs::write(&source, b"\0\xffbinary\r\n").unwrap();
+        let mut volume = MockVolume::default();
+        for command in ["create", "update", "delete"] {
+            let mut args = vec![command, "--snapshot", "3", "--file", "target"];
+            if command != "delete" {
+                args.extend(["--source", source.to_str().unwrap()]);
+            }
+            let mut preview = args.clone();
+            preview.push("--dry-run");
+            let options = parse(&preview).unwrap().unwrap();
+            run_file_command(&mut volume, root.to_str().unwrap(), &options).unwrap();
+            assert!(volume.events.is_empty());
+            assert_eq!(root.join("target").exists(), command != "create");
+            if command == "update" {
+                assert_eq!(fs::read(root.join("target")).unwrap(), b"\0\xffbinary\r\n");
+            }
+            args.push("--confirm-lab");
+            if command == "delete" {
+                args.push("--confirm-delete");
+            }
+            let options = parse(&args).unwrap().unwrap();
+            run_file_command(&mut volume, root.to_str().unwrap(), &options).unwrap();
+            assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
+            assert_eq!(
+                volume.events,
+                [
+                    "lock", "dismount", "set", "unlock", "reopen", "lock", "dismount", "set",
+                    "unlock", "reopen",
+                ]
+            );
+            volume.events.clear();
+            if command == "delete" {
+                assert!(!root.join("target").exists());
+            } else {
+                let options = parse(&[
+                    "read",
+                    "--snapshot",
+                    "3",
+                    "--file",
+                    "target",
+                    "--output",
+                    output.to_str().unwrap(),
+                ])
+                .unwrap()
+                .unwrap();
+                run_file_command(&mut volume, root.to_str().unwrap(), &options).unwrap();
+                assert!(volume.events.is_empty());
+                assert_eq!(fs::read(&output).unwrap(), fs::read(&source).unwrap());
+                fs::remove_file(&output).unwrap();
+                fs::write(&source, b"short").unwrap();
+            }
+        }
+        let options = parse(&[
+            "create",
+            "--snapshot",
+            "3",
+            "--file",
+            "target",
+            "--source",
+            "missing\0source",
+            "--confirm-lab",
+        ]);
+        assert!(options.is_err());
+        let options = parse(&[
+            "create",
+            "--snapshot",
+            "3",
+            "--file",
+            "target",
+            "--source",
+            output.to_str().unwrap(),
+            "--confirm-lab",
+        ])
+        .unwrap()
+        .unwrap();
+        assert!(run_file_command(&mut volume, root.to_str().unwrap(), &options).is_err());
+        assert!(volume.events.is_empty());
+        let target = root.join("target");
+        fs::write(&target, b"keep").unwrap();
+        let permissions = fs::metadata(&target).unwrap().permissions();
+        let mut readonly = permissions.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&target, readonly).unwrap();
+        let options = parse(&[
+            "update",
+            "--snapshot",
+            "3",
+            "--file",
+            "target",
+            "--source",
+            source.to_str().unwrap(),
+            "--confirm-lab",
+        ])
+        .unwrap()
+        .unwrap();
+        assert!(run_file_command(&mut volume, root.to_str().unwrap(), &options).is_err());
+        assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
+        assert_eq!(volume.events.len(), 10);
+        assert_eq!(fs::read(&target).unwrap(), b"keep");
+        fs::set_permissions(&target, permissions).unwrap();
+        fs::remove_file(target).unwrap();
+        fs::remove_file(source).unwrap();
+        fs::remove_dir(root).unwrap();
     }
 
     #[test]

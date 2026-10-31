@@ -39,7 +39,26 @@ try {
         $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
         $help = & $executable --help
         if ($LASTEXITCODE -ne 0) { throw 'Standalone executable help check failed.' }
+        $debugHelp = & $executable debug --help
+        if ($LASTEXITCODE -ne 0) { throw 'Debug help check failed.' }
     } finally { $env:PATH = $oldPath }
+    $helpText = $help -join "`n"
+    $debugHelpText = $debugHelp -join "`n"
+    foreach ($command in @('create', 'read', 'update', 'delete')) {
+        if (!$helpText.Contains("shadow-realm $command ") -or
+            $debugHelpText.Contains("shadow-realm $command ")) {
+            throw "Normal help is missing CRUD command: $command"
+        }
+    }
+    foreach ($command in @('inspect', 'diagnose-lock', 'probe', 'restore-readonly')) {
+        if ($helpText.Contains("shadow-realm $command ") -or
+            !$debugHelpText.Contains("shadow-realm debug $command ")) {
+            throw "Maintenance help is not correctly gated: $command"
+        }
+    }
+    if ($helpText.Contains('--remount-snapshot')) {
+        throw 'Normal help must not expose the redundant remount flag.'
+    }
     $metadata = & cargo metadata --locked --offline --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed.' }
     $version = ($metadata | ConvertFrom-Json).packages[0].version
@@ -48,8 +67,9 @@ try {
     }
     $demo = Get-Content -LiteralPath '.\demo\Invoke-ShadowRealmDemo.ps1' -Raw
     if (!$demo.Contains(([regex]::Escape($version))) -or
-        !$demo.Contains("'--remount-snapshot') 'snapshot-deletion'")) {
-        throw 'Demo version or remount invocation does not match the release.'
+        !$demo.Contains("'--confirm-delete') 'snapshot-deletion'") -or
+        !$demo.Contains("@('debug', 'inspect', '--snapshot'")) {
+        throw 'Demo version or CRUD/debug invocation does not match the release.'
     }
     if (!$demo.Contains('$ToolPath = Join-Path (Split-Path $PSScriptRoot -Parent) ''shadow-realm.exe''')) {
         throw 'Demo default executable path does not match the release layout.'

@@ -24,9 +24,10 @@ Independently compare source and other-snapshot controls when experimenting.
 ## Why remount transitions are mandatory
 
 Attribute-only restoration was followed by NTFS transaction-log flush errors
-in the AIM-backed experiment. Shadow Realm therefore requires
-`--remount-snapshot` for every mutating command, including read-only recovery.
-The old `--restore-attributes-only` option is rejected.
+in the AIM-backed experiment. Shadow Realm therefore automatically remounts
+for every mutating command, including debug read-only recovery.
+`--remount-snapshot` is now a redundant debug-only compatibility flag.
+The old `--restore-attributes-only` option is still rejected.
 
 Each transition locks the selected shadow device before dismounting and
 changing attributes, then attempts unlock, close/reopen, root access, and
