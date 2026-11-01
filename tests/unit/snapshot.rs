@@ -599,7 +599,7 @@ fn restoration_lock_backoff_stops_at_each_successful_attempt() {
         assert_eq!(waits, expected_delays[..failures]);
         assert_eq!(volume.events, vec!["lock"; failures + 1]);
         assert!(volume.locked);
-        assert!(volume.sets.is_empty());
+        assert_eq!(volume.sets, Vec::<u64>::new());
     }
 }
 
@@ -620,7 +620,7 @@ fn exhausted_restoration_lock_keeps_the_last_error_without_mutation() {
     assert_eq!(waits.iter().sum::<Duration>(), Duration::from_millis(4_500));
     assert_eq!(volume.events, vec!["lock"; 8]);
     assert_eq!(volume.attributes, original);
-    assert!(volume.sets.is_empty());
+    assert_eq!(volume.sets, Vec::<u64>::new());
     assert!(!volume.locked);
     assert!(format!("{error:#}").contains("exhausted 8 attempts"));
     assert_eq!(
@@ -683,7 +683,7 @@ fn write_enable_and_lock_diagnosis_do_not_retry_access_denied() {
     };
     assert!(change_attributes(&mut volume, KNOWN_ATTRIBUTES & !READ_ONLY).is_err());
     assert_eq!(volume.events, ["lock"]);
-    assert!(volume.sets.is_empty());
+    assert_eq!(volume.sets, Vec::<u64>::new());
     volume.events.clear();
     let error = diagnose_lock(&mut volume, || Ok(())).unwrap_err();
     assert_eq!(volume.events, ["lock", "lock"]);
@@ -778,7 +778,7 @@ fn explicit_recovery_retries_only_lock_acquisition() {
                 ["lock", "lock", "dismount", "unlock", "reopen"]
             );
             assert_eq!(volume.attributes, original);
-            assert!(volume.sets.is_empty());
+            assert_eq!(volume.sets, Vec::<u64>::new());
         } else {
             assert_eq!(
                 volume.events,
