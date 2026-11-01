@@ -15,8 +15,7 @@ read-only attributes is not rollback: a failed operation can leave partial
 changes or uncertain filesystem state. If restoration fails, preserve the errors
 and revert the VM checkpoint. Deleting a file is not secure erasure.
 
-See the [demo](demo/README.md) for a disposable lab setup and the
-[research notes](demo/RESEARCH.md) for known limitations.
+See the [demo](demo/README.md) for a disposable lab setup and its limitations.
 The [live integration test](demo/README.md#live-os-volume-integration-test)
 exercises OS-volume snapshots in a disposable VM and in push/pull-request CI.
 
@@ -98,8 +97,7 @@ arguments. `--version` prints the executable version.
 
 ### Build from source
 
-For the unreleased commands described above, use the source revision matching
-this README. Install [Rust](https://www.rust-lang.org/tools/install) 1.85+ and
+Install [Rust](https://www.rust-lang.org/tools/install) 1.85+ and
 the Visual Studio C++ Build Tools with the Windows SDK, then run from the
 repository root:
 
@@ -116,8 +114,8 @@ from that folder, or copy `shadow-realm.exe` to a folder on your `PATH`.
 Download a Windows x64 ZIP from [Releases](https://github.com/jsmnsr/shadow-realm/releases),
 compare its SHA-256 hash with the accompanying `SHA256SUMS.txt`, and extract it.
 Run `.\shadow-realm.exe --help` from the extracted folder; no installer is needed.
-Binaries are unsigned. Published releases may predate this CLI, so follow their
-bundled README and [release notes](RELEASE-NOTES.md).
+Binaries are unsigned. Follow the README bundled with your release for its
+matching commands and safety guidance.
 
 Licensed under [MIT](LICENSE); see [third-party notices](THIRD-PARTY-NOTICES.md)
 for dependency licenses.

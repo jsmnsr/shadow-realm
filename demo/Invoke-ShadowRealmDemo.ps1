@@ -149,8 +149,8 @@ function Show-Stage([string]$Name, [bool]$SourceTargetExpected, [bool]$SnapshotT
 }
 
 $version = Invoke-Native $ToolPath @('--version') ''
-if ($version.ExitCode -ne 0 -or $version.Stdout.Trim() -cnotmatch '^shadow-realm 0\.4\.0-experimental\.1$') {
-    throw 'Use the matching v0.4.0-experimental.1 executable supplied with this demo.'
+if ($version.ExitCode -ne 0 -or $version.Stdout.Trim() -cnotmatch '^shadow-realm 0\.4\.0-experimental\.2$') {
+    throw 'Use the matching v0.4.0-experimental.2 executable supplied with this demo.'
 }
 $parent = Join-Path $env:USERPROFILE 'ShadowRealmLab'
 $driveRoot = [IO.Path]::GetPathRoot($parent)

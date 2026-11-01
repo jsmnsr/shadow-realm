@@ -78,8 +78,8 @@ try {
         }
     }
     $files = @(
-        'Cargo.toml', 'Cargo.lock', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'README.md', 'RELEASE-NOTES.md',
-        'demo\README.md', 'demo\RESEARCH.md', 'demo\Invoke-ShadowRealmDemo.ps1',
+        'Cargo.toml', 'Cargo.lock', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'README.md',
+        'demo\README.md', 'demo\Invoke-ShadowRealmDemo.ps1',
         'src\main.rs', 'src\app.rs', 'src\cli.rs', 'src\error.rs',
         'src\paths.rs', 'src\snapshot.rs', 'src\windows\mod.rs',
         'src\windows\handles.rs', 'src\windows\volume.rs',

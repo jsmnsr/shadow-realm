@@ -2,7 +2,6 @@
 
 This optional walkthrough demonstrates the [Shadow Realm utility](../README.md)
 using an owned virtual disk. The CLI itself does not depend on this directory.
-Historical observations and their limitations are in [RESEARCH.md](RESEARCH.md).
 
 **Disposable Windows x64 VMs only. Do not run this demo on a normal host.**
 Use an elevated terminal in a disposable VM with a checkpoint. Never attach
@@ -14,7 +13,7 @@ preserve original images and acquisition hashes elsewhere.
 - Windows PowerShell 5.1+ and administrator elevation.
 - At least 5 GiB free on the user-profile drive.
 - Windows storage cmdlets, `diskpart.exe`, `vssadmin.exe`, and CIM support.
-- The matching Shadow Realm `0.4.0-experimental.1` executable.
+- The matching Shadow Realm `0.4.0-experimental.2` executable.
 
 Keep the executable and terminal working directory outside all snapshots.
 Close Explorer windows and other tools accessing the selected snapshot before
