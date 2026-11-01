@@ -88,7 +88,7 @@ try {
         'tests\unit\app.rs', 'tests\unit\cli.rs', 'tests\unit\error.rs', 'tests\unit\paths.rs', 'tests\unit\snapshot.rs',
         'tests\unit\windows\files.rs', 'tests\unit\windows\handles.rs',
         'tests\unit\windows\marker.rs', 'tests\unit\windows\volume.rs',
-        'scripts\Test.ps1', 'scripts\Package.ps1'
+        'scripts\Test.ps1', 'scripts\Test-LiveVss.ps1', 'scripts\Package.ps1'
     )
     $rustSources = @(Get-ChildItem -LiteralPath (Join-Path $root 'src'), (Join-Path $root 'tests') -Filter '*.rs' -File -Recurse |
         ForEach-Object { $_.FullName.Substring($root.Length + 1) })

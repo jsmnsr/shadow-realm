@@ -19,7 +19,7 @@ try {
         $env:CARGO_ENCODED_RUSTFLAGS = $oldEncodedFlags + [char]31 + '-Dwarnings'
     }
     $env:CARGO_TARGET_DIR = Join-Path $root 'target'
-    foreach ($script in @('demo\Invoke-ShadowRealmDemo.ps1', 'scripts\Test.ps1', 'scripts\Package.ps1')) {
+    foreach ($script in @('demo\Invoke-ShadowRealmDemo.ps1', 'scripts\Test.ps1', 'scripts\Test-LiveVss.ps1', 'scripts\Package.ps1')) {
         $tokens = $null
         $errors = $null
         [void][Management.Automation.Language.Parser]::ParseFile(
@@ -88,25 +88,27 @@ try {
     if (!$demo.Contains('$ToolPath = Join-Path (Split-Path $PSScriptRoot -Parent) ''shadow-realm.exe''')) {
         throw 'Demo default executable path does not match the release layout.'
     }
-    $info = New-Object Diagnostics.ProcessStartInfo
-    $info.FileName = 'powershell.exe'
-    $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
-        (Join-Path $root 'demo\Invoke-ShadowRealmDemo.ps1') + '"'
-    $info.UseShellExecute = $false
-    $info.RedirectStandardOutput = $true
-    $info.RedirectStandardError = $true
-    $process = New-Object Diagnostics.Process
-    $process.StartInfo = $info
-    try {
-        if (!$process.Start()) { throw 'Could not start demo consent-gate check.' }
-        $stdout = $process.StandardOutput.ReadToEndAsync()
-        $stderr = $process.StandardError.ReadToEndAsync()
-        $process.WaitForExit()
-        if ($process.ExitCode -eq 0 -or $stderr.Result -notmatch 'Use -ConfirmLab only inside a disposable Windows VM') {
-            throw "Demo did not stop at its consent gate: $($stdout.Result) $($stderr.Result)"
+    foreach ($consentScript in @('demo\Invoke-ShadowRealmDemo.ps1', 'scripts\Test-LiveVss.ps1')) {
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName = 'powershell.exe'
+        $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+            (Join-Path $root $consentScript) + '"'
+        $info.UseShellExecute = $false
+        $info.RedirectStandardOutput = $true
+        $info.RedirectStandardError = $true
+        $process = New-Object Diagnostics.Process
+        $process.StartInfo = $info
+        try {
+            if (!$process.Start()) { throw "Could not start consent-gate check: $consentScript" }
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            $process.WaitForExit()
+            if ($process.ExitCode -eq 0 -or $stderr.Result -notmatch 'Use -ConfirmLab only inside a disposable Windows VM') {
+                throw "Script did not stop at its consent gate: $consentScript $($stdout.Result) $($stderr.Result)"
+            }
+        } finally {
+            $process.Dispose()
         }
-    } finally {
-        $process.Dispose()
     }
     Write-Host 'Verification passed. No live VSS operations or disk-creating demo were run.'
 } finally {

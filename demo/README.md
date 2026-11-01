@@ -46,6 +46,34 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\demo\Invoke-ShadowReal
 For a GNU build, substitute `x86_64-pc-windows-gnu` in both paths.
 Without `-ConfirmLab`, the script stops before creating any lab resources.
 
+## Live OS-volume integration test
+
+`scripts\Test-LiveVss.ps1` tests the VM's existing Windows OS volume instead
+of creating another VHDX. It creates a uniquely named fixture directory and
+two new snapshots: one target and one untouched control. It checks read,
+dry-run, probe, create, shorter/empty updates, and delete, comparing fixture
+hashes against the live source and control after each mutation.
+
+Run only in an elevated terminal inside a checkpointed disposable VM:
+
+```powershell
+.\scripts\Test-LiveVss.ps1 -ConfirmLab -ToolPath .\target\x86_64-pc-windows-msvc\release\shadow-realm.exe
+```
+
+In GitHub Actions, manually run **Shadow Realm Windows verification** on the
+desired branch with `live_vss` enabled. This runs only on a fresh
+GitHub-hosted `windows-2022` VM; it never runs live tests automatically on
+pushes or pull requests. The job uploads command logs, OS/provider/storage
+metadata, hashes, inspections, and storage events even when the test fails.
+Local runs retain equivalent evidence in a new directory under `%TEMP%`.
+
+The test never forces dismounts, changes shadow-storage quotas, or retries a
+failed mutation. It leaves its fixture directory and snapshots for inspection;
+discard the VM or revert its checkpoint afterward. Do not treat rejected
+snapshot creation or writable transitions as passing tests. A passing run
+applies only to the recorded configuration and a short observation window,
+not reboot persistence, physical disks, other VSS providers, or production safety.
+
 ## What the demonstration does
 
 The script creates a new 2 GiB dynamic Microsoft VHDX under
@@ -87,7 +115,7 @@ Existing runs under the former `VssLab` directory are not migrated.
 snapshot. Revert the disposable VM checkpoint to discard the experiment.
 Read-only flags are not proof of clean filesystem recovery; the script does
 not automatically roll back changes. If restoration fails, preserve the
-errors and follow the utility's [recovery limits](../README.md#failure-and-recovery-limits).
+errors and follow the utility's [safety guidance](../README.md).
 Do not force dismount, use an old attribute-only binary, or blindly retry a
 failed deletion.
 

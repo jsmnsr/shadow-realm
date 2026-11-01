@@ -17,6 +17,8 @@ and revert the VM checkpoint. Deleting a file is not secure erasure.
 
 See the [demo](demo/README.md) for a disposable lab setup and the
 [research notes](demo/RESEARCH.md) for known limitations.
+The [live integration test](demo/README.md#live-os-volume-integration-test)
+exercises OS-volume snapshots in a disposable VM or a manually triggered CI job.
 
 ## Commands
 
