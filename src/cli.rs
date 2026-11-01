@@ -11,6 +11,7 @@ DISPOSABLE WINDOWS VM ONLY. Run elevated; never use production snapshots.
 Snapshot numbers are HarddiskVolumeShadowCopy suffixes, not VSS GUIDs.
 Mutations automatically remount writable, operate, then restore read-only.
 Busy snapshots are never force-dismounted. Attribute-only transitions are disabled.
+Read-only restoration retries access-denied locks: at most 8 attempts, 4.5s total backoff.
 Restoration is best-effort, not rollback or proof of filesystem integrity.
 Errors, termination, power loss, or driver failures can leave uncertain state.";
 

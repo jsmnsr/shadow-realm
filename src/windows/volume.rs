@@ -1,6 +1,7 @@
 //! Buffered Win32 volume controls and reopen-based filesystem mounting.
 
 use super::handles::{open_file_handle, win32_error};
+use crate::error::LockControlFailure;
 use crate::paths::snapshot_path;
 use crate::snapshot::Volume;
 use anyhow::{Context, Result};
@@ -156,7 +157,8 @@ impl Volume for SnapshotVolume {
                     "FSCTL_LOCK_VOLUME (no force-dismount will be attempted)",
                     error,
                 )
-            })?;
+            })
+            .context(LockControlFailure)?;
         Ok(())
     }
 

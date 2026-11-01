@@ -5,9 +5,11 @@
 
 #![forbid(unsafe_code)]
 
-use crate::error::combine;
+use crate::error::{LockControlFailure, combine};
 use anyhow::{Context, Result};
+use std::{io, thread, time::Duration};
 
+use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows_sys::Win32::System::Ioctl::{
     GPT_BASIC_DATA_ATTRIBUTE_HIDDEN as HIDDEN,
     GPT_BASIC_DATA_ATTRIBUTE_NO_DRIVE_LETTER as NO_DRIVE_LETTER,
@@ -16,6 +18,7 @@ use windows_sys::Win32::System::Ioctl::{
 };
 
 const KNOWN_ATTRIBUTES: u64 = NO_DRIVE_LETTER | HIDDEN | SHADOW_COPY | READ_ONLY;
+const RESTORE_LOCK_BACKOFF_MS: [u64; 7] = [100, 200, 400, 800, 1_000, 1_000, 1_000];
 
 pub(crate) trait Volume {
     fn attributes(&mut self) -> Result<u64>;
@@ -137,9 +140,41 @@ impl<V: Volume> Drop for RemountGuard<'_, V> {
     }
 }
 
+fn lock_for_restoration<V: Volume>(volume: &mut V, mut wait: impl FnMut(Duration)) -> Result<()> {
+    let attempts = RESTORE_LOCK_BACKOFF_MS.len() + 1;
+    for attempt in 1..=attempts {
+        let error = match volume.lock() {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        let code = error
+            .root_cause()
+            .downcast_ref::<io::Error>()
+            .and_then(io::Error::raw_os_error)
+            .and_then(|code| u32::try_from(code).ok());
+        if !error.is::<LockControlFailure>() || code != Some(ERROR_ACCESS_DENIED) {
+            return Err(error);
+        }
+        let Some(&delay_ms) = RESTORE_LOCK_BACKOFF_MS.get(attempt - 1) else {
+            return Err(error).with_context(|| {
+                format!("Restoration lock acquisition exhausted {attempts} attempts; no forced dismount was attempted")
+            });
+        };
+        eprintln!(
+            "Restoration lock attempt {attempt}/{attempts} failed: {error:#}. Retrying in {delay_ms} ms; no forced dismount."
+        );
+        wait(Duration::from_millis(delay_ms));
+    }
+    unreachable!("The final lock attempt either succeeds or returns its error")
+}
+
 fn change_attributes<V: Volume>(volume: &mut V, attributes: u64) -> Result<()> {
     println!("Locking the selected shadow device; busy snapshots will not be force-dismounted.");
-    volume.lock()?;
+    if attributes & READ_ONLY != 0 {
+        lock_for_restoration(volume, thread::sleep)?;
+    } else {
+        volume.lock()?;
+    }
     let mut guard = RemountGuard {
         volume,
         armed: true,

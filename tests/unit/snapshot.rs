@@ -144,6 +144,8 @@ struct MockVolume {
     writable_override: Option<bool>,
     events: Vec<&'static str>,
     failures: Vec<(&'static str, usize)>,
+    lock_errors: Vec<(usize, i32)>,
+    tag_lock_errors: bool,
     panic_on: Option<&'static str>,
     locked: bool,
 }
@@ -160,6 +162,8 @@ impl Default for MockVolume {
             writable_override: None,
             events: Vec::new(),
             failures: Vec::new(),
+            lock_errors: Vec::new(),
+            tag_lock_errors: true,
             panic_on: None,
             locked: false,
         }
@@ -215,6 +219,15 @@ impl Volume for MockVolume {
     fn lock(&mut self) -> Result<()> {
         self.step("lock")?;
         assert!(!self.locked);
+        let attempt = self.events.iter().filter(|&&event| event == "lock").count();
+        if let Some((_, code)) = self.lock_errors.iter().find(|(nth, _)| *nth == attempt) {
+            let error = anyhow::Error::new(io::Error::from_raw_os_error(*code));
+            return Err(if self.tag_lock_errors {
+                error.context(LockControlFailure)
+            } else {
+                error.context("simulated volume handle reopen")
+            });
+        }
         self.locked = true;
         Ok(())
     }
@@ -569,6 +582,211 @@ fn attribute_changes_always_lock_dismount_and_reopen() {
         );
         assert_eq!(volume.attributes, attributes);
         assert_eq!(volume.sets, [attributes]);
+        assert!(!volume.locked);
+    }
+}
+
+#[test]
+fn restoration_lock_backoff_stops_at_each_successful_attempt() {
+    let expected_delays = [100, 200, 400, 800, 1_000, 1_000, 1_000].map(Duration::from_millis);
+    for failures in 0..=expected_delays.len() {
+        let mut volume = MockVolume {
+            lock_errors: (1..=failures).map(|attempt| (attempt, 5)).collect(),
+            ..Default::default()
+        };
+        let mut waits = Vec::new();
+        lock_for_restoration(&mut volume, |delay| waits.push(delay)).unwrap();
+        assert_eq!(waits, expected_delays[..failures]);
+        assert_eq!(volume.events, vec!["lock"; failures + 1]);
+        assert!(volume.locked);
+        assert!(volume.sets.is_empty());
+    }
+}
+
+#[test]
+fn exhausted_restoration_lock_keeps_the_last_error_without_mutation() {
+    let original = KNOWN_ATTRIBUTES & !READ_ONLY;
+    let mut volume = MockVolume {
+        attributes: original,
+        lock_errors: (1..=8).map(|attempt| (attempt, 5)).collect(),
+        ..Default::default()
+    };
+    let mut waits = Vec::new();
+    let error = lock_for_restoration(&mut volume, |delay| waits.push(delay)).unwrap_err();
+    assert_eq!(
+        waits,
+        [100, 200, 400, 800, 1_000, 1_000, 1_000].map(Duration::from_millis)
+    );
+    assert_eq!(waits.iter().sum::<Duration>(), Duration::from_millis(4_500));
+    assert_eq!(volume.events, vec!["lock"; 8]);
+    assert_eq!(volume.attributes, original);
+    assert!(volume.sets.is_empty());
+    assert!(!volume.locked);
+    assert!(format!("{error:#}").contains("exhausted 8 attempts"));
+    assert_eq!(
+        error
+            .root_cause()
+            .downcast_ref::<io::Error>()
+            .unwrap()
+            .raw_os_error(),
+        Some(5)
+    );
+}
+
+#[test]
+fn restoration_lock_does_not_retry_other_errors() {
+    for code in [19, 32, 87] {
+        for previous_denial in [false, true] {
+            let mut volume = MockVolume::default();
+            if previous_denial {
+                volume.lock_errors.push((1, 5));
+            }
+            let attempt = 1 + usize::from(previous_denial);
+            volume.lock_errors.push((attempt, code));
+            let mut waits = Vec::new();
+            let error = lock_for_restoration(&mut volume, |delay| waits.push(delay)).unwrap_err();
+            assert_eq!(waits, vec![Duration::from_millis(100); attempt - 1]);
+            assert_eq!(volume.events, vec!["lock"; attempt]);
+            assert_eq!(
+                error
+                    .root_cause()
+                    .downcast_ref::<io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(code)
+            );
+            assert!(!volume.locked);
+        }
+    }
+    let mut volume = MockVolume {
+        failures: vec![("lock", 1)],
+        ..Default::default()
+    };
+    assert!(lock_for_restoration(&mut volume, |_| panic!("must not wait")).is_err());
+    assert_eq!(volume.events, ["lock"]);
+
+    let mut volume = MockVolume {
+        lock_errors: vec![(1, 5)],
+        tag_lock_errors: false,
+        ..Default::default()
+    };
+    let error = lock_for_restoration(&mut volume, |_| panic!("must not wait")).unwrap_err();
+    assert!(format!("{error:#}").contains("volume handle reopen"));
+    assert_eq!(volume.events, ["lock"]);
+}
+
+#[test]
+fn write_enable_and_lock_diagnosis_do_not_retry_access_denied() {
+    let mut volume = MockVolume {
+        lock_errors: vec![(1, 5), (2, 5)],
+        ..Default::default()
+    };
+    assert!(change_attributes(&mut volume, KNOWN_ATTRIBUTES & !READ_ONLY).is_err());
+    assert_eq!(volume.events, ["lock"]);
+    assert!(volume.sets.is_empty());
+    volume.events.clear();
+    let error = diagnose_lock(&mut volume, || Ok(())).unwrap_err();
+    assert_eq!(volume.events, ["lock", "lock"]);
+    assert!(format!("{error:#}").contains("BEFORE PREVIEW: LOCK FAILED"));
+    assert!(format!("{error:#}").contains("AFTER PREVIEW: LOCK FAILED"));
+    assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
+    assert!(!volume.locked);
+}
+
+#[test]
+fn automatic_restoration_retries_without_repeating_the_file_operation() {
+    for file_fails in [false, true] {
+        let mut volume = MockVolume {
+            lock_errors: vec![(2, 5)],
+            ..Default::default()
+        };
+        let mut actions = 0;
+        let result = with_writable_snapshot(&mut volume, || {
+            actions += 1;
+            if file_fails {
+                anyhow::bail!("file operation failed");
+            }
+            Ok(())
+        });
+        assert_eq!(actions, 1);
+        assert_eq!(result.is_err(), file_fails);
+        if let Err(error) = result {
+            assert!(format!("{error:#}").contains("file operation failed"));
+        }
+        assert_eq!(
+            volume.events,
+            [
+                "lock", "dismount", "set", "unlock", "reopen", "lock", "lock", "dismount", "set",
+                "unlock", "reopen",
+            ]
+        );
+        assert_eq!(
+            volume.sets,
+            [KNOWN_ATTRIBUTES & !READ_ONLY, KNOWN_ATTRIBUTES]
+        );
+        assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
+        assert!(!volume.locked);
+    }
+}
+
+#[test]
+fn unwinding_restoration_retries_access_denied() {
+    let mut volume = MockVolume {
+        lock_errors: vec![(2, 5)],
+        ..Default::default()
+    };
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| {
+            let _ = with_writable_snapshot(&mut volume, || panic!("file operation panicked"));
+        }))
+        .is_err()
+    );
+    assert_eq!(
+        volume
+            .events
+            .iter()
+            .filter(|&&event| event == "lock")
+            .count(),
+        3
+    );
+    assert_eq!(
+        volume.sets,
+        [KNOWN_ATTRIBUTES & !READ_ONLY, KNOWN_ATTRIBUTES]
+    );
+    assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
+    assert!(!volume.locked);
+}
+
+#[test]
+fn explicit_recovery_retries_only_lock_acquisition() {
+    for dismount_fails in [false, true] {
+        let original = KNOWN_ATTRIBUTES & !READ_ONLY;
+        let mut volume = MockVolume {
+            attributes: original,
+            lock_errors: vec![(1, 5)],
+            ..Default::default()
+        };
+        if dismount_fails {
+            volume.failures.push(("dismount", 1));
+        }
+        let result = restore_readonly(&mut volume);
+        assert_eq!(result.is_err(), dismount_fails);
+        if dismount_fails {
+            assert!(format!("{:#}", result.unwrap_err()).contains("dismount"));
+            assert_eq!(
+                volume.events,
+                ["lock", "lock", "dismount", "unlock", "reopen"]
+            );
+            assert_eq!(volume.attributes, original);
+            assert!(volume.sets.is_empty());
+        } else {
+            assert_eq!(
+                volume.events,
+                ["lock", "lock", "dismount", "set", "unlock", "reopen"]
+            );
+            assert_eq!(volume.attributes, KNOWN_ATTRIBUTES);
+            assert_eq!(volume.sets, [KNOWN_ATTRIBUTES]);
+        }
         assert!(!volume.locked);
     }
 }

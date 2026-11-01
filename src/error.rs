@@ -1,9 +1,19 @@
-//! Combines operation and cleanup failures without discarding either error chain.
+//! Identifies lock-control failures and preserves operation and cleanup error chains.
 
 #![forbid(unsafe_code)]
 
 use anyhow::{Error, Result};
 use std::fmt;
+
+/// Distinguishes the lock control's failure from a failure reopening the volume.
+#[derive(Debug)]
+pub(crate) struct LockControlFailure;
+
+impl fmt::Display for LockControlFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Volume lock control failed")
+    }
+}
 
 // Error::source exposes one chain; retain cleanup separately for diagnostics.
 #[derive(Debug)]

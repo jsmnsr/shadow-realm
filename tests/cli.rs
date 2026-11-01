@@ -37,6 +37,8 @@ fn generated_help_lists_only_commands_in_the_selected_namespace() {
         assert!(help.contains("Usage: shadow-realm"));
         assert!(help.contains("DISPOSABLE WINDOWS VM ONLY"));
         assert!(help.contains("Restoration is best-effort"));
+        assert!(help.contains("access-denied locks: at most 8 attempts"));
+        assert!(help.contains("4.5s total backoff"));
         assert!(!help.contains("--remount-snapshot"));
         for command in visible {
             assert!(has_command(&help, command), "{help}");

@@ -71,6 +71,11 @@ From the folder containing `shadow-realm.exe`, with local `payload.bin` and
 Keep the executable and terminal outside the snapshot and close other tools
 accessing it. Busy snapshots are never force-dismounted.
 
+Read-only restoration retries access-denied lock failures up to **8 attempts**,
+with **4.5 seconds total backoff**; Windows calls can take additional time.
+This also applies to `debug restore-readonly`. Write-enable locks, file
+operations, and other failed transition steps are not retried.
+
 ### Debug commands
 
 Low-level maintenance lives under `debug`:
