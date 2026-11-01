@@ -60,10 +60,11 @@ Run only in an elevated terminal inside a checkpointed disposable VM:
 .\scripts\Test-LiveVss.ps1 -ConfirmLab -ToolPath .\target\x86_64-pc-windows-msvc\release\shadow-realm.exe
 ```
 
-In GitHub Actions, manually run **Shadow Realm Windows verification** on the
-desired branch with `live_vss` enabled. This runs only on a fresh
-GitHub-hosted `windows-2022` VM; it never runs live tests automatically on
-pushes or pull requests. The job uploads command logs, OS/provider/storage
+The **Shadow Realm Windows verification** workflow runs the `live-vss` job
+automatically on pushes and pull requests, alongside the unit/CLI and packaging
+jobs. Manual workflow runs also run all checks; no opt-in input is needed.
+Live tests run only on a fresh GitHub-hosted `windows-2022` VM, never on a
+self-hosted runner. The job uploads command logs, OS/provider/storage
 metadata, hashes, inspections, and storage events even when the test fails.
 Local runs retain equivalent evidence in a new directory under `%TEMP%`.
 

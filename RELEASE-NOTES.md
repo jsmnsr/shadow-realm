@@ -1,7 +1,8 @@
 # Unreleased
 
-- Added an opt-in live OS-volume integration test and manual GitHub-hosted
-  Windows CI job, with provider metadata, source/control fixture comparisons,
+- Added a consent-gated live OS-volume integration test and GitHub-hosted
+  Windows CI job that runs on pushes, pull requests, and manual workflow runs,
+  with provider metadata, source/control fixture comparisons,
   restoration checks, and retained failure evidence. A Windows Server 2022
   run passed; see the [bounded results](demo/RESEARCH.md#live-os-volume-ci-result).
 - Defined command hierarchy, option validation, consent constraints, and help

@@ -44,9 +44,10 @@ established. A baseline snapshot was not rediscovered after VHDX reattach;
 that does not establish persistence of selective deletion. Static driver
 analysis and the SDK control definition do not establish a supported contract.
 
-Default automated verification uses mock volume controls and owned temporary
-files/junctions; it never opens live shadow devices. The separate opt-in
-OS-volume test above uses real VSS snapshots. Neither establishes general
+Local `scripts\Test.ps1` verification uses mock volume controls and owned
+temporary files/junctions; it never opens live shadow devices. CI also runs
+the OS-volume test above against real VSS snapshots in a separate disposable
+VM job on pushes, pull requests, and manual runs. Neither establishes general
 filesystem safety. Independently compare source and other-snapshot controls
 when experimenting.
 

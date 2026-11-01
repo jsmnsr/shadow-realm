@@ -4,18 +4,12 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      live_vss:
-        description: 'Run destructive snapshot tests on a disposable hosted VM OS volume'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 jobs:
   windows:
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.live_vss }}
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -49,7 +43,6 @@ jobs:
           retention-days: 7
 
   live-vss:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.live_vss }}
     runs-on: windows-2022
     timeout-minutes: 15
     steps:
