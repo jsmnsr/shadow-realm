@@ -1,6 +1,33 @@
 # Shadow Realm research notes
 
-## Bounded evidence, not guarantees
+## Live OS-volume CI result
+
+The [manual GitHub Actions run on 2026-11-01 UTC](https://github.com/jsmnsr/shadow-realm/actions/runs/41306942239)
+passed against commit `9f4678133a01378cec3e349b4447063c32735f31`.
+This was a real snapshot test, not mocked volume controls.
+
+| Component | Recorded configuration |
+| --- | --- |
+| OS | Windows Server 2022 Datacenter, build 20348 |
+| Volsnap | 10.0.20348.1 |
+| VSS provider used by both snapshots | Microsoft Software Shadow Copy provider 1.0, version 1.0.0.7 |
+| Source | Existing NTFS OS volume; boot/system disk reported as `Msft Virtual Disk`, SAS |
+
+Read exports, all three mutation dry-runs, writable probing, create, shorter
+and empty updates, and deletion passed. Original read-only attributes were
+confirmed after mutations and after a 15-second delay. Fixture hashes in the
+live source and a separate control snapshot stayed unchanged. No matching
+storage/filesystem warning or error events appeared in the collection window.
+The run's artifact contains the binary hash, snapshot/provider identities,
+command results, fixture hashes, and inspections.
+
+Unlike the earlier demo, this did not create an additional data VHDX. It still
+used a virtualized hosted runner: the result does not establish bare-metal,
+Windows 11, other-provider, reboot-persistence, or production compatibility.
+It is a successful observation for the recorded configuration, not proof of
+filesystem integrity.
+
+## Earlier bounded experiments
 
 Earlier disposable-VM experiments used Windows 11 build 22631 and Volsnap
 10.0.22621.1:
@@ -17,9 +44,11 @@ established. A baseline snapshot was not rediscovered after VHDX reattach;
 that does not establish persistence of selective deletion. Static driver
 analysis and the SDK control definition do not establish a supported contract.
 
-Automated tests use mock volume controls and owned temporary files/junctions.
-They never open live shadow devices. They do not establish filesystem safety.
-Independently compare source and other-snapshot controls when experimenting.
+Default automated verification uses mock volume controls and owned temporary
+files/junctions; it never opens live shadow devices. The separate opt-in
+OS-volume test above uses real VSS snapshots. Neither establishes general
+filesystem safety. Independently compare source and other-snapshot controls
+when experimenting.
 
 ## Why remount transitions are mandatory
 

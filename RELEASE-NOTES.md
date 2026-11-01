@@ -1,5 +1,9 @@
 # Unreleased
 
+- Added an opt-in live OS-volume integration test and manual GitHub-hosted
+  Windows CI job, with provider metadata, source/control fixture comparisons,
+  restoration checks, and retained failure evidence. A Windows Server 2022
+  run passed; see the [bounded results](demo/RESEARCH.md#live-os-volume-ci-result).
 - Defined command hierarchy, option validation, consent constraints, and help
   together in Clap. Removed manual help blocks and argument scanning; each
   command now supports generated `--help`, with `--version` at the root.
