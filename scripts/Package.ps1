@@ -47,8 +47,8 @@ try {
             throw "Third-party notices must cover $($dependency.name) $($dependency.version)."
         }
     }
-    if ($version -notmatch '^\d+\.\d+\.\d+-experimental\.\d+$') {
-        throw 'Only explicitly experimental versions may be packaged.'
+    if ($version -notmatch '^(?:0\.\d+\.\d+|\d+\.\d+\.\d+-experimental\.\d+)$') {
+        throw 'Only pre-1.0 or explicitly experimental versions may be packaged.'
     }
     $env:CARGO_TARGET_DIR = Join-Path $root 'target'
     $env:RUSTFLAGS = $null

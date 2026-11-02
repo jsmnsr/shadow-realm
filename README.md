@@ -53,18 +53,18 @@ For a device ending in `HarddiskVolumeShadowCopy42`, use `--snapshot 42`, not
 its VSS GUID or drive letter. Recheck the device and source volume each time;
 numbers can change.
 
-From the folder containing `shadow-realm.exe`, with local `payload.bin` and
+With `shadow-realm` [on your PATH](#install), local `payload.bin` and
 `replacement.bin` files and an existing `Demo` directory in the chosen snapshot:
 
 ```powershell
 # Preview, then create a new file.
-.\shadow-realm.exe create --snapshot 42 --file 'Demo\new.bin' --source '.\payload.bin' --dry-run
-.\shadow-realm.exe create --snapshot 42 --file 'Demo\new.bin' --source '.\payload.bin' --confirm-lab
+shadow-realm create --snapshot 42 --file 'Demo\new.bin' --source '.\payload.bin' --dry-run
+shadow-realm create --snapshot 42 --file 'Demo\new.bin' --source '.\payload.bin' --confirm-lab
 
 # Export, replace, then delete that file.
-.\shadow-realm.exe read --snapshot 42 --file 'Demo\new.bin' --output '.\export.bin'
-.\shadow-realm.exe update --snapshot 42 --file 'Demo\new.bin' --source '.\replacement.bin' --confirm-lab
-.\shadow-realm.exe delete --snapshot 42 --file 'Demo\new.bin' --confirm-lab --confirm-delete
+shadow-realm read --snapshot 42 --file 'Demo\new.bin' --output '.\export.bin'
+shadow-realm update --snapshot 42 --file 'Demo\new.bin' --source '.\replacement.bin' --confirm-lab
+shadow-realm delete --snapshot 42 --file 'Demo\new.bin' --confirm-lab --confirm-delete
 ```
 
 Keep the executable and terminal outside the snapshot and close other tools
@@ -103,17 +103,28 @@ repository root:
 
 ```powershell
 cargo build --release --locked --target x86_64-pc-windows-msvc
-.\target\x86_64-pc-windows-msvc\release\shadow-realm.exe --help
+$env:Path = "$(Resolve-Path '.\target\x86_64-pc-windows-msvc\release');$env:Path"
+shadow-realm --help
 ```
 
-The executable is in `target\x86_64-pc-windows-msvc\release`. Run the examples
-from that folder, or copy `shadow-realm.exe` to a folder on your `PATH`.
+The executable is in `target\x86_64-pc-windows-msvc\release`. The PATH change
+above applies only to the current PowerShell session.
 
 ### Prebuilt releases
 
 Download a Windows x64 ZIP from [Releases](https://github.com/jsmnsr/shadow-realm/releases),
 compare its SHA-256 hash with the accompanying `SHA256SUMS.txt`, and extract it.
-Run `.\shadow-realm.exe --help` from the extracted folder; no installer is needed.
+From the extracted folder, add its absolute path to the current PowerShell
+session's PATH, then run the tool by name:
+
+```powershell
+$env:Path = "$(Get-Location);$env:Path"
+shadow-realm --help
+```
+
+PowerShell does not search the current directory for executables unless it is
+on PATH. For future terminals, add the executable's folder to your user PATH,
+or copy `shadow-realm.exe` to a folder already on PATH. No installer is needed.
 Binaries are unsigned. Follow the README bundled with your release for its
 matching commands and safety guidance.
 

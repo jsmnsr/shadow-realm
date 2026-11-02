@@ -13,7 +13,7 @@ preserve original images and acquisition hashes elsewhere.
 - Windows PowerShell 5.1+ and administrator elevation.
 - At least 5 GiB free on the user-profile drive.
 - Windows storage cmdlets, `diskpart.exe`, `vssadmin.exe`, and CIM support.
-- The matching Shadow Realm `0.4.0-experimental.2` executable.
+- The matching Shadow Realm `0.5.0` executable.
 
 Keep the executable and terminal working directory outside all snapshots.
 Close Explorer windows and other tools accessing the selected snapshot before
@@ -35,14 +35,15 @@ not the current working directory. Use `-ToolPath` to override it.
 
 ## Run from source
 
-Build at the repository root, then invoke the demo with the built executable:
+Follow the [source build and PATH setup](../README.md#build-from-source), then
+invoke the demo with that executable:
 
 ```powershell
-cargo build --release --locked --target x86_64-pc-windows-msvc
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\demo\Invoke-ShadowRealmDemo.ps1 -ConfirmLab -ToolPath .\target\x86_64-pc-windows-msvc\release\shadow-realm.exe
+$tool = (Get-Command shadow-realm -CommandType Application -ErrorAction Stop).Source
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\demo\Invoke-ShadowRealmDemo.ps1 -ConfirmLab -ToolPath $tool
 ```
 
-For a GNU build, substitute `x86_64-pc-windows-gnu` in both paths.
+For a GNU build, use `x86_64-pc-windows-gnu` in the linked build and PATH commands.
 Without `-ConfirmLab`, the script stops before creating any lab resources.
 
 ## Live OS-volume integration test
@@ -53,10 +54,12 @@ two new snapshots: one target and one untouched control. It checks read,
 dry-run, probe, create, shorter/empty updates, and delete, comparing fixture
 hashes against the live source and control after each mutation.
 
-Run only in an elevated terminal inside a checkpointed disposable VM:
+Run only in an elevated terminal inside a checkpointed disposable VM, with
+the matching `shadow-realm` executable [on PATH](../README.md#install):
 
 ```powershell
-.\scripts\Test-LiveVss.ps1 -ConfirmLab -ToolPath .\target\x86_64-pc-windows-msvc\release\shadow-realm.exe
+$tool = (Get-Command shadow-realm -CommandType Application -ErrorAction Stop).Source
+.\scripts\Test-LiveVss.ps1 -ConfirmLab -ToolPath $tool
 ```
 
 The **Shadow Realm Windows verification** workflow runs the `live-vss` job
